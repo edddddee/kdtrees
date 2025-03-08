@@ -1,4 +1,4 @@
-# K-D trees
+# (Unfinished) K-D trees
 
 Implementation of Quadtrees, Octrees and general K-dimensional trees in rust.
 Currently only works on the nightly compiler toolchain because it uses
