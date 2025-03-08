@@ -1,28 +1,36 @@
-use std::marker::PhantomData;
+#![feature(generic_const_exprs)]
+
+//use std::miarker::PhantomData;
 use std::ops::{Div, Range, Sub};
 
 #[derive(Debug)]
-struct QuadTree<Unit, Item> {
-    root: QuadTreeNode<Unit, Item>,
+struct KdTree<Unit, Item, const K: usize>
+where
+    [(); 1 << K]: Sized,
+{
+    root: KdTreeNode<Unit, Item, K>,
     max_items: usize,
 }
 
 #[derive(Debug)]
-enum QuadTreeNode<Unit, Item> {
+enum KdTreeNode<Unit, Item, const K: usize>
+where
+    [(); 1 << K]: Sized,
+{
     Leaf {
-        ranges: [Range<Unit>; 2],
+        ranges: [Range<Unit>; K],
         items: Vec<Item>,
         max_items: usize,
     },
     Parent {
-        ranges: [Range<Unit>; 2],
-        children: Box<[QuadTreeNode<Unit, Item>; 4]>,
+        ranges: [Range<Unit>; K],
+        children: Box<[KdTreeNode<Unit, Item, K>; 1 << K]>,
         max_items: usize,
     },
 }
 
 #[derive(Debug)]
-enum QuadTreeError {
+enum KdTreeError {
     EmptyRegion,
     NodeAlreadySplit,
     OutOfBounds,
@@ -64,13 +72,14 @@ where
     }
 }
 
-impl<Unit, Item> QuadTreeNode<Unit, Item>
+impl<Unit, Item, const K: usize> KdTreeNode<Unit, Item, K>
 where
     Item: PartialOrd<Unit>,
     Unit: Halveable + PartialOrd<Item> + Clone,
     Range<Unit>: MidPoint<Unit>,
+    [(); 1 << K]: Sized,
 {
-    fn new(ranges: [Range<Unit>; 2], max_items: usize) -> Self {
+    fn new(ranges: [Range<Unit>; K], max_items: usize) -> Self {
         Self::Leaf {
             ranges,
             max_items,
@@ -117,7 +126,7 @@ where
         items.into_iter().for_each(|item| self.insert(item));
     }
 
-    fn split(&mut self) -> Result<(), QuadTreeError> {
+    fn split(&mut self) -> Result<(), KdTreeError> {
         let self_owned = unsafe { std::ptr::read(self) };
         let mut result = Ok(());
         let new = match self_owned {
@@ -129,9 +138,9 @@ where
                 if !ranges.iter().any(|range| range.is_empty()) {
                     // Dimension is K = 2.
                     // Number of different subranges is 2^K = 4, i.e. 1 << K
-                    let children: [QuadTreeNode<Unit, Item>; 1 << 2] =
+                    let children: [KdTreeNode<Unit, Item, K>; 1 << K] =
                         std::array::from_fn(|combination| {
-                            let subranges: [Range<Unit>; 2] =
+                            let subranges: [Range<Unit>; K] =
                                 std::array::from_fn(|i| {
                                     let range = &ranges[i];
                                     let mid_point = range.mid_point();
@@ -141,8 +150,8 @@ where
                                         mid_point..range.end.clone()
                                     }
                                 });
-                            // Use subranges to create a child QuadTreeNode
-                            QuadTreeNode::new(subranges, max_items)
+                            // Use subranges to create a child KdTreeNode
+                            KdTreeNode::new(subranges, max_items)
                         });
 
                     let mut tmp = Self::Parent {
@@ -153,7 +162,7 @@ where
                     tmp.insert_items(items);
                     tmp
                 } else {
-                    result = Err(QuadTreeError::EmptyRegion);
+                    result = Err(KdTreeError::EmptyRegion);
                     Self::Leaf {
                         ranges,
                         items,
@@ -162,7 +171,7 @@ where
                 }
             }
             other => {
-                result = Err(QuadTreeError::NodeAlreadySplit);
+                result = Err(KdTreeError::NodeAlreadySplit);
                 other
             }
         };
@@ -173,14 +182,15 @@ where
     }
 }
 
-impl<Unit, Item> QuadTree<Unit, Item>
+impl<Unit, Item, const K: usize> KdTree<Unit, Item, K>
 where
     Item: PartialOrd<Unit>,
     Unit: Halveable + PartialOrd<Item> + Clone,
     Range<Unit>: MidPoint<Unit>,
+    [(); 1 << K]: Sized,
 {
-    fn new(ranges: [Range<Unit>; 2], max_items: usize) -> Self {
-        let root: QuadTreeNode<Unit, Item> = QuadTreeNode::Leaf {
+    fn new(ranges: [Range<Unit>; K], max_items: usize) -> Self {
+        let root: KdTreeNode<Unit, Item, K> = KdTreeNode::Leaf {
             ranges,
             items: vec![],
             max_items,
@@ -188,14 +198,14 @@ where
         Self { root, max_items }
     }
 
-    fn insert(&mut self, item: Item) -> Result<(), QuadTreeError> {
+    fn insert(&mut self, item: Item) -> Result<(), KdTreeError> {
         if !self
             .root
             .get_ranges()
             .iter()
             .all(|range| range.contains::<Item>(&item))
         {
-            Err(QuadTreeError::OutOfBounds)
+            Err(KdTreeError::OutOfBounds)
         } else {
             self.root.insert(item);
             Ok(())
@@ -209,8 +219,7 @@ mod tests {
 
     #[test]
     fn tinkering() {
-        let mut tree: QuadTree<f64, f64> =
-            QuadTree::new([(0.0..1.0), (0.0..1.0)], 2);
+        let mut tree = KdTree::new([(0.0..1.0), (0.0..1.0)], 2);
         tree.insert(0.2);
         tree.insert(0.5);
         tree.insert(0.8);
