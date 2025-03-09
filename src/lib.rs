@@ -2,6 +2,10 @@
 #![feature(generic_const_exprs)]
 
 use std::ops::{Div, Range, Sub};
+// TODO: KdTree might not need to contain every single item, instead
+// just some index for each item.
+// TODO: max_items could be a const generic parameter, instead of a rarely used
+// field.
 
 #[derive(Debug)]
 pub struct KdTree<Unit, Item, const K: usize>
