@@ -1,33 +1,36 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
+use core::convert::From;
 use std::num::NonZero;
-use std::ops::{Div, Range, Sub};
+use std::ops::{Add, Div, Range};
 
 // TODO: Implement a version that takes references to the underlying object
 // TODO: Implement a version that takes points and id:s
 // TODO: Implement a version that incrementally updates the tree when
 //       points move
 
+#[derive(Debug)]
 pub struct KdTree<'a, T, const K: usize>
 where
     //&'a Item: Into<[T; K]>,
     [(); 1 << K]: Sized,
 {
-    root: Node<'a, T, K>,
+    pub root: Node<'a, T, K>,
     count: usize,
     #[allow(dead_code)]
     capacity: NonZero<usize>,
 }
 
-enum Node<'a, T, const K: usize>
+#[derive(Debug)]
+pub enum Node<'a, T, const K: usize>
 where
     //&'a Item: Into<[T; K]>,
     [(); 1 << K]: Sized,
 {
     Leaf {
         ranges: [Range<T>; K],
-        points: Vec<&'a [T; K]>,
+        points: Vec<[T; K]>,
         ids: Vec<usize>,
         capacity: NonZero<usize>,
     },
@@ -47,26 +50,28 @@ pub enum ErrorKind {
 }
 
 pub trait AsCoordinates<T, const K: usize> {
-    fn coordinates(&self) -> &[T; K];
+    fn coordinates(self) -> [T; K];
+}
+impl<S, T, const K: usize> AsCoordinates<T, K> for S
+where
+    T: Copy,
+    S: Into<[T; K]> + ?Sized,
+{
+    fn coordinates(self) -> [T; K] {
+        self.into()
+    }
 }
 
+/*
 impl<T, const K: usize> AsCoordinates<T, K> for [T; K]
 where
     T: Copy,
 {
-    fn coordinates(&self) -> &[T; K] {
-        self
+    fn coordinates(&self) -> [T; K] {
+        *self
     }
 }
-
-impl<T, const K: usize> AsCoordinates<T, K> for &[T; K]
-where
-    T: Copy,
-{
-    fn coordinates(&self) -> &[T; K] {
-        self
-    }
-}
+*/
 
 pub trait Two<T> {
     fn two() -> T;
@@ -74,21 +79,21 @@ pub trait Two<T> {
 
 impl<T> Two<T> for T
 where
-    T: From<f64>,
+    T: From<f32>,
 {
     #[inline]
     fn two() -> T {
-        T::from(2.0)
+        2.0.into()
     }
 }
 
 pub trait Halveable:
-    Sized + PartialOrd + Sub<Output = Self> + Div<Output = Self> + Two<Self>
+    Sized + PartialOrd + Add<Output = Self> + Div<Output = Self> + Two<Self>
 {
 }
 
 impl<T> Halveable for T where
-    T: Sized + PartialOrd + Sub<Output = Self> + Div<Output = Self> + Two<Self>
+    T: Sized + PartialOrd + Add<Output = Self> + Div<Output = Self> + Two<Self>
 {
 }
 
@@ -101,7 +106,7 @@ where
     T: Halveable + Clone,
 {
     fn mid_point(&self) -> T {
-        (self.end.clone() - self.start.clone()) / T::two()
+        (self.end.clone() + self.start.clone()) / T::two()
     }
 }
 
@@ -120,10 +125,7 @@ where
         }
     }
 
-    fn insert<'b>(&mut self, point: &'b [T; K], id: usize)
-    where
-        'b: 'a,
-    {
+    fn insert(&mut self, point: [T; K], id: usize) {
         match &mut *self {
             Self::Leaf {
                 points,
@@ -134,7 +136,7 @@ where
                 points.push(point);
                 ids.push(id);
                 if points.len() > capacity.get() {
-                    let mut owned_points: Vec<&[T; K]> =
+                    let mut owned_points: Vec<[T; K]> =
                         Vec::with_capacity(points.len());
                     let mut owned_ids = Vec::with_capacity(ids.len());
                     *points = std::mem::take(&mut owned_points);
@@ -243,23 +245,40 @@ where
         }
     }
 
-    pub fn insert<'b, Item>(&mut self, item: &'b Item)
-    where
-        'b: 'a,
-        Item: AsCoordinates<T, K>,
-    {
-        self.root.insert(item.coordinates(), self.count);
-        self.count += 1;
+    fn insert_point(&mut self, point: [T; K]) {
+        if self
+            .root
+            .get_ranges()
+            .iter()
+            .enumerate()
+            .all(|(axis, range)| range.contains(&point[axis]))
+        {
+            self.root.insert(point, self.count);
+            self.count += 1;
+        }
     }
 
-    pub fn insert_vec<'b, Item>(&mut self, items: &'b [Item])
+    pub fn insert<Item>(&mut self, item: Item)
     where
-        'b: 'a,
-        Item: AsCoordinates<T, K>,
+        //for<'b> &'b Item: AsCoordinates<T, K>,
+        Item: Into<[T; K]> + ?Sized,
+        //[T; K]: for<'b> From<&'b Item>,
+    {
+        self.insert_point(item.into());
+    }
+
+    pub fn insert_slice<Item>(&mut self, items: &[Item])
+    where
+        for<'b> &'b Item: Into<[T; K]>,
     {
         for item in items {
-            self.insert(item);
+            let point: [T; K] = item.into();
+            self.insert_point(point);
         }
+    }
+
+    pub fn insert_vec(&mut self, vec: Vec<[T; K]>) {
+        vec.into_iter().for_each(|p| self.insert_point(p));
     }
 }
 
