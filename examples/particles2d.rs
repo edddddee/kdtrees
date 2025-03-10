@@ -7,6 +7,10 @@ use macroquad::prelude::*;
 use macroquad::rand::gen_range;
 //use rayon::prelude::*;
 
+// TODO: Make a function to spawn a cluster of points around some center.
+//       i.e. a form of point cloud.
+//       Spawn cluster with mouse click?
+
 #[inline]
 const fn dist_squared(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
     (x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)
@@ -24,8 +28,13 @@ struct Particle {
 
 impl Particle {
     fn new(x: f32, y: f32, radius: f32, density: f32) -> Self {
-        let vx = gen_range(-30.0, 50.0);
-        let vy = gen_range(-50.0, 30.0);
+        // let vx = gen_range(-30.0, 50.0);
+        // let vy = gen_range(-50.0, 30.0);
+        let (vx, vy) = if x < 900.0 / 2.0 {
+            (-75.0, 0.0)
+        } else {
+            (0.0, 0.0)
+        };
         Self {
             x,
             y,
@@ -137,8 +146,9 @@ fn create_particles(
 ) -> Vec<Particle> {
     (0..n)
         .map(|_| {
+            let r = 0.45;
             Particle::new(
-                gen_range(0.2 * width, 0.75 * width),
+                gen_range(r * width, (1.0 - r) * width),
                 gen_range(0.0, height),
                 radius,
                 1.0,
@@ -180,13 +190,14 @@ async fn main() {
     let width = screen_width();
     let height = screen_height();
 
-    let n = 10000;
+    let n = 5000;
     let radius = 2.0;
     let mut particles = create_particles(width, height, radius, n);
-    let capacity = 10;
+    let capacity = 5;
 
     let mut use_quadtree = true;
     let mut wall_collision = true;
+    let mut show_bounds = true;
 
     let mut frame = 0;
     loop {
@@ -199,6 +210,11 @@ async fn main() {
             wall_collision = !wall_collision;
             let status = if wall_collision { "ON" } else { "OFF" };
             println!("Wall collision: {status}");
+        }
+        if is_key_pressed(KeyCode::B) {
+            show_bounds = !show_bounds;
+            let status = if show_bounds { "ON" } else { "OFF" };
+            println!("Show bounds: {status}");
         }
         let dt = get_frame_time();
 
@@ -250,9 +266,14 @@ async fn main() {
         }
         clear_background(BLACK);
         particles.iter().step_by(1).for_each(|particle| {
-            draw_circle(particle.x, particle.y, particle.radius, RED);
+            draw_circle(
+                particle.x,
+                particle.y,
+                particle.radius,
+                Color::from_hex(0x1c73ff),
+            );
         });
-        if use_quadtree {
+        if use_quadtree && show_bounds {
             draw_bounds(&tree.root);
         }
         draw_text(format!("FPS: {}", get_fps()).as_str(), 0., 16., 32., GREEN);
