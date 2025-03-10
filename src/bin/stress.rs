@@ -16,11 +16,11 @@ fn main() {
 
     let mut tree = KdTree::new(bounds, CAPACITY);
     let points: Vec<_> = (0..N).map(|_| rng.random::<[f64; K]>()).collect();
-    tree.insert_vec(&points);
+    tree.insert_vec(points);
 
     let points: Vec<_> = (0..N).map(|_| rng.random::<[f64; K]>()).collect();
     let now = Instant::now();
-    tree.insert_vec(&points);
+    tree.insert_vec(points);
     let elapsed = now.elapsed().as_nanos();
     println!("Inserting {N} items into a {K}-d tree with CAPACITY={CAPACITY}");
     println!("Took: {} ns / iter", elapsed as f64 / N as f64);
