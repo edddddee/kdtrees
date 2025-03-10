@@ -1,43 +1,71 @@
-//#![feature(test)]
+#![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
+use std::num::NonZero;
 use std::ops::{Div, Range, Sub};
-// TODO: KdTree might not need to contain every single item, instead
-// just some index for each item.
-// TODO: max_items could be a const generic parameter, instead of a rarely used
-// field.
 
-#[derive(Debug)]
-pub struct KdTree<Unit, Item, const K: usize>
+// TODO: Implement a version that takes references to the underlying object
+// TODO: Implement a version that takes points and id:s
+// TODO: Implement a version that incrementally updates the tree when
+//       points move
+
+pub struct KdTree<'a, T, const K: usize>
 where
+    //&'a Item: Into<[T; K]>,
     [(); 1 << K]: Sized,
 {
-    pub root: KdTreeNode<Unit, Item, K>,
-    pub max_items: usize,
+    root: Node<'a, T, K>,
+    count: usize,
+    #[allow(dead_code)]
+    capacity: NonZero<usize>,
 }
 
-#[derive(Debug)]
-enum KdTreeNode<Unit, Item, const K: usize>
+enum Node<'a, T, const K: usize>
 where
+    //&'a Item: Into<[T; K]>,
     [(); 1 << K]: Sized,
 {
     Leaf {
-        ranges: [Range<Unit>; K],
-        items: Vec<Item>,
-        max_items: usize,
+        ranges: [Range<T>; K],
+        points: Vec<&'a [T; K]>,
+        ids: Vec<usize>,
+        capacity: NonZero<usize>,
     },
     Parent {
-        ranges: [Range<Unit>; K],
-        children: Box<[KdTreeNode<Unit, Item, K>; 1 << K]>,
-        max_items: usize,
+        ranges: [Range<T>; K],
+        children: Box<[Node<'a, T, K>; 1 << K]>,
+        #[allow(dead_code)]
+        capacity: NonZero<usize>,
     },
 }
 
 #[derive(Debug)]
-pub enum KdTreeError {
+pub enum ErrorKind {
     EmptyRegion,
     NodeAlreadySplit,
     OutOfBounds,
+}
+
+pub trait AsCoordinates<T, const K: usize> {
+    fn coordinates(&self) -> &[T; K];
+}
+
+impl<T, const K: usize> AsCoordinates<T, K> for [T; K]
+where
+    T: Copy,
+{
+    fn coordinates(&self) -> &[T; K] {
+        self
+    }
+}
+
+impl<T, const K: usize> AsCoordinates<T, K> for &[T; K]
+where
+    T: Copy,
+{
+    fn coordinates(&self) -> &[T; K] {
+        self
+    }
 }
 
 pub trait Two<T> {
@@ -46,10 +74,11 @@ pub trait Two<T> {
 
 impl<T> Two<T> for T
 where
-    T: From<u32>,
+    T: From<f64>,
 {
+    #[inline]
     fn two() -> T {
-        T::from(2u32)
+        T::from(2.0)
     }
 }
 
@@ -63,106 +92,77 @@ impl<T> Halveable for T where
 {
 }
 
-pub trait MidPoint<Unit> {
-    fn mid_point(&self) -> Unit;
+pub trait MidPoint<T> {
+    fn mid_point(&self) -> T;
 }
 
-impl<Unit> MidPoint<Unit> for Range<Unit>
+impl<T> MidPoint<T> for Range<T>
 where
-    Unit: Halveable + Clone,
+    T: Halveable + Clone,
 {
-    fn mid_point(&self) -> Unit {
-        (self.end.clone() - self.start.clone()) / Unit::two()
+    fn mid_point(&self) -> T {
+        (self.end.clone() - self.start.clone()) / T::two()
     }
 }
 
-pub trait Volume<T> {
-    fn covers(&self, item: &T) -> bool;
-}
-
-pub trait AsCoordinate<T, const K: usize> {
-    fn as_coordinate(&self) -> [&T; K];
-}
-
-impl<T, const K: usize> AsCoordinate<T, K> for [T; K] {
-    fn as_coordinate(&self) -> [&T; K] {
-        std::array::from_fn(|i| &self[i])
-    }
-}
-
-impl<Unit, Item, const K: usize> Volume<Item> for [Range<Unit>; K]
+impl<'a, T, const K: usize> Node<'a, T, K>
 where
-    Item: AsCoordinate<Unit, K>,
-    Unit: PartialOrd,
-{
-    fn covers(&self, item: &Item) -> bool {
-        let point: [&Unit; K] = item.as_coordinate();
-        self.iter()
-            .enumerate()
-            .all(|(axis, range)| range.contains(&point[axis]))
-    }
-}
-
-/*
-impl<Unit, Item, const K: usize> Volume<Item> for &[Range<Unit>; K]
-where
-    Item: AsArray<Unit, K>,
-    Unit: PartialOrd,
-    [Range<Unit>; K]: Volume<Item>,
-{
-    fn covers(&self, item: &Item) -> bool {
-        <[Range<Unit>; K]>::covers(self, item)
-    }
-}
-*/
-
-impl<Unit, Item, const K: usize> KdTreeNode<Unit, Item, K>
-where
-    Item: AsCoordinate<Unit, K>,
-    Unit: Halveable + Clone,
-    Range<Unit>: MidPoint<Unit>,
-    [Range<Unit>; K]: Volume<Item>,
+    T: Halveable + Clone,
+    Range<T>: MidPoint<T>,
     [(); 1 << K]: Sized,
 {
-    fn new(ranges: [Range<Unit>; K], max_items: usize) -> Self {
+    fn new(ranges: [Range<T>; K], capacity: NonZero<usize>) -> Self {
         Self::Leaf {
             ranges,
-            max_items,
-            items: vec![],
+            capacity,
+            points: vec![],
+            ids: vec![],
         }
     }
 
-    fn insert(&mut self, item: Item) {
+    fn insert<'b>(&mut self, point: &'b [T; K], id: usize)
+    where
+        'b: 'a,
+    {
         match &mut *self {
             Self::Leaf {
-                items, max_items, ..
+                points,
+                ids,
+                capacity,
+                ..
             } => {
-                items.push(item);
-                if items.len() > *max_items {
-                    let mut owned_items: Vec<Item> =
-                        Vec::with_capacity(items.len());
-                    *items = std::mem::replace(&mut owned_items, vec![]);
+                points.push(point);
+                ids.push(id);
+                if points.len() > capacity.get() {
+                    let mut owned_points: Vec<&[T; K]> =
+                        Vec::with_capacity(points.len());
+                    let mut owned_ids = Vec::with_capacity(ids.len());
+                    *points = std::mem::take(&mut owned_points);
+                    *ids = std::mem::take(&mut owned_ids);
+
                     let _ = self.split();
-                    owned_items.into_iter().for_each(|item| self.insert(item));
+                    owned_points
+                        .into_iter()
+                        .zip(owned_ids)
+                        .for_each(|(p, id)| self.insert(p, id));
                 }
             }
-            Self::Parent { children, .. } => {
-                for child in children.iter_mut() {
-                    if child.get_ranges().covers(&item) {
-                        child.insert(item);
-                        break;
+            Self::Parent {
+                ranges, children, ..
+            } => {
+                let mut idx: usize = 0;
+                ranges.iter().enumerate().for_each(|(axis, range)| {
+                    if point[axis] >= range.mid_point() {
+                        idx += 1 << axis;
                     }
-                }
+                });
+                children[idx].insert(point, id);
             }
         };
     }
 
-    fn insert_items(&mut self, items: Vec<Item>) {
-        items.into_iter().for_each(|item| self.insert(item));
-    }
-
     #[inline]
-    fn get_ranges(&self) -> &[Range<Unit>; K] {
+    fn get_ranges(&self) -> &[Range<T>; K] {
         match self {
             Self::Leaf { ranges, .. } => ranges,
             Self::Parent { ranges, .. } => ranges,
@@ -178,20 +178,20 @@ where
     // binary numbers from 0 to 2^K - 1. If the i:th bit is 1,
     // then the range along the i:th axis is [c, b), otherwise
     // the range is [a, c).
-    fn split(&mut self) -> Result<(), KdTreeError> {
+    fn split(&mut self) -> Result<(), ErrorKind> {
         // If the range has 0 volume, it makes no sense to split.
         if self.get_ranges().iter().any(|range| range.is_empty()) {
-            return Err(KdTreeError::EmptyRegion);
+            return Err(ErrorKind::EmptyRegion);
         }
         let self_owned = unsafe { std::ptr::read(self) };
         match self_owned {
             // Splitting path
             Self::Leaf {
-                ranges, max_items, ..
+                ranges, capacity, ..
             } => {
-                let children: [KdTreeNode<Unit, Item, K>; 1 << K] =
+                let children: [Node<T, K>; 1 << K] =
                     std::array::from_fn(|combination| {
-                        let subranges: [Range<Unit>; K] =
+                        let subranges: [Range<T>; K] =
                             std::array::from_fn(|i| {
                                 let range = &ranges[i];
                                 let mid_point = range.mid_point();
@@ -201,15 +201,15 @@ where
                                     mid_point..range.end.clone()
                                 }
                             });
-                        KdTreeNode::new(subranges, max_items)
+                        Node::new(subranges, capacity)
                     });
 
                 let new_self = Self::Parent {
                     ranges,
-                    max_items,
+                    capacity,
                     children: Box::new(children),
                 };
-                //new_self.insert_items(items);
+                //new_self.insert_vec(items);
                 //items.into_iter().for_each(|item| new_self.insert(item));
                 unsafe {
                     std::ptr::write(self, new_self);
@@ -220,66 +220,48 @@ where
                 unsafe {
                     std::ptr::write(self, other);
                 };
-                return Err(KdTreeError::NodeAlreadySplit);
+                Err(ErrorKind::NodeAlreadySplit)
             }
         }
     }
 }
 
-impl<Unit, Item, const K: usize> KdTree<Unit, Item, K>
+impl<'a, T, const K: usize> KdTree<'a, T, K>
 where
-    Item: AsCoordinate<Unit, K>,
-    Unit: Halveable + Clone,
-    Range<Unit>: MidPoint<Unit>,
-    [Range<Unit>; K]: Volume<Item>,
+    T: Halveable + Clone,
+    Range<T>: MidPoint<T>,
     [(); 1 << K]: Sized,
 {
-    pub fn new(ranges: [Range<Unit>; K], max_items: usize) -> Self {
-        let root: KdTreeNode<Unit, Item, K> = KdTreeNode::Leaf {
-            ranges,
-            items: Vec::<Item>::new(),
-            max_items,
-        };
-        Self { root, max_items }
+    pub fn new(ranges: impl Into<[Range<T>; K]>, capacity: usize) -> Self {
+        let capacity: NonZero<usize> =
+            capacity.try_into().expect("Capacity must be nonzero");
+        let root = Node::new(ranges.into(), capacity);
+        Self {
+            root,
+            capacity,
+            count: 0,
+        }
     }
 
-    pub fn insert(&mut self, item: Item) {
-        self.root.insert(item);
+    pub fn insert<'b, Item>(&mut self, item: &'b Item)
+    where
+        'b: 'a,
+        Item: AsCoordinates<T, K>,
+    {
+        self.root.insert(item.coordinates(), self.count);
+        self.count += 1;
+    }
+
+    pub fn insert_vec<'b, Item>(&mut self, items: &'b [Item])
+    where
+        'b: 'a,
+        Item: AsCoordinates<T, K>,
+    {
+        for item in items {
+            self.insert(item);
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn print_type<T>(_: &T) {
-        println!("{:?}", std::any::type_name::<T>());
-    }
-
-    #[test]
-    fn bench() {
-        use std::time::Instant;
-
-        use rand::prelude::*;
-
-        let mut rng = rand::rng();
-
-        const MAX_LEAF_ITEMS: usize = 1000;
-        const K: usize = 3;
-        const N: usize = 10000;
-        let bounds: [Range<f64>; K] = std::array::from_fn(|i| 0.0..1.0);
-        let mut tree = KdTree::new(bounds, MAX_LEAF_ITEMS);
-        let mut points: Vec<[f64; K]> = Vec::with_capacity(N);
-        for _ in 0..N {
-            let point: [f64; K] = rand::random();
-            points.push(point);
-        }
-
-        let now = Instant::now();
-        points.into_iter().for_each(|p| {
-            tree.insert(p);
-        });
-        println!("{N} items took {} ms", now.elapsed().as_millis());
-        //println!("{tree:#?}");
-    }
-}
+mod tests {}

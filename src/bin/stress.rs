@@ -1,28 +1,29 @@
+#![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
 use std::time::Instant;
 
-use kdtrees::*;
+use kdtrees::KdTree;
+use rand::Rng;
 
 fn main() {
-    const N: usize = 1000;
-    const K: usize = 3;
-    let max_leaf_items: usize = f64::sqrt(N as f64) as usize;
-    let ranges: [_; K] = std::array::from_fn(|_| 0.0..1.0);
-    let mut tree = KdTree::new(ranges, max_leaf_items);
-    let mut points: Vec<[f64; K]> = Vec::with_capacity(N);
-    for _ in 0..N {
-        let point: [f64; K] = rand::random();
-        points.push(point);
-    }
+    let mut rng = rand::rng();
 
+    const CAPACITY: usize = 16;
+    const K: usize = 3;
+    const N: usize = 10000;
+    let bounds: [_; K] = std::array::from_fn(|_| 0.0..1.0);
+
+    let mut tree = KdTree::new(bounds, CAPACITY);
+    let points: Vec<_> = (0..N).map(|_| rng.random::<[f64; K]>()).collect();
+    tree.insert_vec(&points);
+
+    let points: Vec<_> = (0..N).map(|_| rng.random::<[f64; K]>()).collect();
     let now = Instant::now();
-    points.into_iter().for_each(|p| {
-        tree.insert(p);
-    });
-    println!(
-        "{N} items took {} ns / iter",
-        now.elapsed().as_nanos() as f64 / N as f64
-    );
-    //println!("{tree:#?}");
+    tree.insert_vec(&points);
+    let elapsed = now.elapsed().as_nanos();
+    println!("Inserting {N} items into a {K}-d tree with CAPACITY={CAPACITY}");
+    println!("Took: {} ns / iter", elapsed as f64 / N as f64);
+
+    //println!("{:#?}", tree);
 }
