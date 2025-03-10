@@ -6,10 +6,19 @@ edition = "2024"
 [dependencies]
 rand = "0.9.0"
 
-[profile.release]
-opt-level = 3
-lto = "fat"        # More aggressive link-time optimization
-codegen-units = 1  # Better optimizations, but slower compile
-panic = "abort"    # Removes unwinding, reduces binary size
+[dev-dependencies]
+macroquad = "0.4.13"
+rayon = "1.10.0"
+
+[[example]]
+name = "particles2d"
+path = "examples/particles2d.rs"
+
+# For MAXIMUM PERFORMANCE:
+#[profile.release]
+#opt-level = 3
+#lto = "fat"        # More aggressive link-time optimization
+#codegen-units = 1  # Better optimizations, but slower compile
+#panic = "abort"    # Removes unwinding, reduces binary size
 
 
