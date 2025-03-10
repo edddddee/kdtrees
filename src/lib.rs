@@ -17,7 +17,7 @@ where
     [(); 1 << K]: Sized,
 {
     pub root: Node<'a, T, K>,
-    count: usize,
+    pub count: usize,
     #[allow(dead_code)]
     capacity: NonZero<usize>,
 }
@@ -136,12 +136,8 @@ where
                 points.push(point);
                 ids.push(id);
                 if points.len() > capacity.get() {
-                    let mut owned_points: Vec<[T; K]> =
-                        Vec::with_capacity(points.len());
-                    let mut owned_ids = Vec::with_capacity(ids.len());
-                    *points = std::mem::take(&mut owned_points);
-                    *ids = std::mem::take(&mut owned_ids);
-
+                    let owned_points = std::mem::take(points);
+                    let owned_ids = std::mem::take(ids);
                     let _ = self.split();
                     owned_points
                         .into_iter()

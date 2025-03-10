@@ -1,37 +1,131 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
+use itertools::Itertools;
 use kdtrees::{KdTree, MidPoint};
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
-use rayon::prelude::*;
+//use rayon::prelude::*;
 
-#[derive(Clone)]
+#[inline]
+const fn dist_squared(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    (x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)
+}
+
+#[derive(Clone, Debug)]
 struct Particle {
     x: f32,
     y: f32,
     vx: f32,
     vy: f32,
     radius: f32,
+    mass: f32,
 }
 
 impl Particle {
-    fn new(x: f32, y: f32, radius: f32) -> Self {
+    fn new(x: f32, y: f32, radius: f32, density: f32) -> Self {
         let vx = gen_range(-30.0, 50.0);
-        let vy = gen_range(-20.0, 70.0);
+        let vy = gen_range(-50.0, 30.0);
         Self {
             x,
             y,
             vx,
             vy,
             radius,
+            mass: density * radius * radius,
         }
+    }
+
+    #[inline]
+    const fn dist_squared(&self, other: &Self) -> f32 {
+        dist_squared(self.x, self.y, other.x, other.y)
+    }
+
+    #[inline]
+    fn dist(&self, other: &Self) -> f32 {
+        self.dist_squared(other).sqrt()
+    }
+
+    #[inline]
+    const fn collides(&self, other: &Self) -> bool {
+        self.dist_squared(other)
+            < (self.radius + other.radius) * (self.radius + other.radius)
+    }
+
+    fn resolve_collision(&mut self, other: &mut Self) {
+        let inner_prod = (self.vx - other.vx) * (self.x - other.x)
+            + (self.vy - other.vy) * (self.y - other.y);
+        let num1 = 2.0 * other.mass * inner_prod;
+        let num2 = 2.0 * self.mass * inner_prod;
+        let div = (self.mass + other.mass) * self.dist_squared(other);
+
+        let vx1 = self.vx - num1 * (self.x - other.x) / div;
+        let vy1 = self.vy - num1 * (self.y - other.y) / div;
+        let vx2 = other.vx - num2 * (other.x - self.x) / div;
+        let vy2 = other.vy - num2 * (other.y - self.y) / div;
+
+        // Update velocities
+        self.vx = vx1;
+        self.vy = vy1;
+        other.vx = vx2;
+        other.vy = vy2;
+
+        // Handle overlap
+        let dist = self.dist(other);
+        let tangentx = (other.x - self.x) / dist;
+        let tangenty = (other.y - self.y) / dist;
+        let overlap = 0.5 * (self.radius + other.radius - dist);
+        self.x -= overlap * tangentx;
+        self.y -= overlap * tangenty;
+        other.x += overlap * tangentx;
+        other.y += overlap * tangenty;
     }
 }
 
 impl From<&Particle> for [f32; 2] {
     fn from(p: &Particle) -> Self {
         [p.x, p.y]
+    }
+}
+
+fn handle_collisions(
+    node: &kdtrees::Node<f32, 2>,
+    particles: &mut Vec<Particle>,
+) {
+    match node {
+        kdtrees::Node::Leaf { ids, .. } => {
+            if ids.len() >= 2 {
+                for pair in ids.iter().combinations(2) {
+                    let id1: usize = *pair[0];
+                    let id2: usize = *pair[1];
+                    let (i, j) =
+                        if id1 < id2 { (id1, id2) } else { (id2, id1) };
+                    let (left, right) = particles.split_at_mut(j);
+                    let (p1, p2) = (&mut left[i], &mut right[0]);
+                    if p1.collides(p2) {
+                        p1.resolve_collision(p2);
+                    }
+                }
+            }
+        }
+        kdtrees::Node::Parent { children, .. } => {
+            for child in children.iter() {
+                handle_collisions(child, &mut *particles);
+            }
+        }
+    }
+}
+
+fn handle_collisions_global(particles: &mut Vec<Particle>) {
+    let len = particles.len();
+    for i in 0..len {
+        for j in (i + 1)..len {
+            let (left, right) = particles.split_at_mut(j);
+            let (p1, p2) = (&mut left[i], &mut right[0]);
+            if p1.collides(p2) {
+                p1.resolve_collision(p2);
+            }
+        }
     }
 }
 
@@ -47,6 +141,7 @@ fn create_particles(
                 gen_range(0.2 * width, 0.75 * width),
                 gen_range(0.0, height),
                 radius,
+                1.0,
             )
         })
         .collect()
@@ -88,33 +183,78 @@ async fn main() {
     let n = 10000;
     let radius = 2.0;
     let mut particles = create_particles(width, height, radius, n);
-
     let capacity = 10;
+
+    let mut use_quadtree = true;
+    let mut wall_collision = true;
 
     let mut frame = 0;
     loop {
+        if is_key_pressed(KeyCode::Space) {
+            use_quadtree = !use_quadtree;
+            let status = if use_quadtree { "ON" } else { "OFF" };
+            println!("Quadtree: {status}");
+        }
+        if is_key_pressed(KeyCode::W) {
+            wall_collision = !wall_collision;
+            let status = if wall_collision { "ON" } else { "OFF" };
+            println!("Wall collision: {status}");
+        }
         let dt = get_frame_time();
 
         let bounds = [(0.0..width), (0.0..height)];
         let mut tree = KdTree::new(bounds, capacity);
-        tree.insert_slice(&particles[..]);
 
-        if frame % 100 == 0 {
-            println!("dt = {:.2} ms", dt * 1000.0);
+        if use_quadtree {
+            tree.insert_slice(&particles[..]);
+            handle_collisions(&tree.root, &mut particles);
+        } else {
+            handle_collisions_global(&mut particles);
         }
-
-        clear_background(BLACK);
-        particles.iter().step_by(1).for_each(|particle| {
-            draw_circle(particle.x, particle.y, particle.radius, RED);
-        });
 
         particles.iter_mut().for_each(|particle| {
             particle.x += particle.vx * dt;
             particle.y += particle.vy * dt;
-            particle.x %= width;
-            particle.y %= height;
+
+            if wall_collision {
+                if particle.x + particle.radius > width {
+                    particle.x = width - particle.radius;
+                    particle.vx *= -1.0;
+                }
+                if particle.x - particle.radius < 0.0 {
+                    particle.x = particle.radius;
+                    particle.vx *= -1.0;
+                }
+                if particle.y + particle.radius > height {
+                    particle.y = height - particle.radius;
+                    particle.vy *= -1.0;
+                }
+                if particle.y - particle.radius < 0.0 {
+                    particle.y = particle.radius;
+                    particle.vy *= -1.0;
+                }
+            } else {
+                particle.x %= width;
+                if particle.x < 0.0 {
+                    particle.x += width;
+                }
+                particle.y %= height;
+                if particle.y < 0.0 {
+                    particle.y += height;
+                }
+            }
         });
-        draw_bounds(&tree.root);
+
+        if frame % 100 == 0 {
+            println!("frame time = {:.2} ms", dt * 1000.0);
+        }
+        clear_background(BLACK);
+        particles.iter().step_by(1).for_each(|particle| {
+            draw_circle(particle.x, particle.y, particle.radius, RED);
+        });
+        if use_quadtree {
+            draw_bounds(&tree.root);
+        }
         draw_text(format!("FPS: {}", get_fps()).as_str(), 0., 16., 32., GREEN);
 
         frame += 1;
