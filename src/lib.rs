@@ -11,32 +11,30 @@ use std::ops::{Add, Div, Range};
 //       points move
 
 #[derive(Debug)]
-pub struct KdTree<'a, T, const K: usize>
+pub struct KdTree<T, Item, const K: usize>
 where
-    //&'a Item: Into<[T; K]>,
     [(); 1 << K]: Sized,
 {
-    pub root: Node<'a, T, K>,
+    pub root: Node<T, Item, K>,
     pub count: usize,
     #[allow(dead_code)]
     capacity: NonZero<usize>,
 }
 
 #[derive(Debug)]
-pub enum Node<'a, T, const K: usize>
+pub enum Node<T, Item, const K: usize>
 where
-    //&'a Item: Into<[T; K]>,
     [(); 1 << K]: Sized,
 {
     Leaf {
         ranges: [Range<T>; K],
-        points: Vec<[T; K]>,
+        points: Vec<Item>,
         ids: Vec<usize>,
         capacity: NonZero<usize>,
     },
     Parent {
         ranges: [Range<T>; K],
-        children: Box<[Node<'a, T, K>; 1 << K]>,
+        children: Box<[Node<T, Item, K>; 1 << K]>,
         #[allow(dead_code)]
         capacity: NonZero<usize>,
     },
@@ -110,10 +108,9 @@ where
     }
 }
 
-impl<'a, T, const K: usize> Node<'a, T, K>
+impl<T, Item, const K: usize> Node<T, Item, K>
 where
     T: Halveable + Clone,
-    Range<T>: MidPoint<T>,
     [(); 1 << K]: Sized,
 {
     fn new(ranges: [Range<T>; K], capacity: NonZero<usize>) -> Self {
@@ -123,40 +120,6 @@ where
             points: vec![],
             ids: vec![],
         }
-    }
-
-    fn insert(&mut self, point: [T; K], id: usize) {
-        match &mut *self {
-            Self::Leaf {
-                points,
-                ids,
-                capacity,
-                ..
-            } => {
-                points.push(point);
-                ids.push(id);
-                if points.len() > capacity.get() {
-                    let owned_points = std::mem::take(points);
-                    let owned_ids = std::mem::take(ids);
-                    let _ = self.split();
-                    owned_points
-                        .into_iter()
-                        .zip(owned_ids)
-                        .for_each(|(p, id)| self.insert(p, id));
-                }
-            }
-            Self::Parent {
-                ranges, children, ..
-            } => {
-                let mut idx: usize = 0;
-                ranges.iter().enumerate().for_each(|(axis, range)| {
-                    if point[axis] >= range.mid_point() {
-                        idx += 1 << axis;
-                    }
-                });
-                children[idx].insert(point, id);
-            }
-        };
     }
 
     #[inline]
@@ -187,7 +150,7 @@ where
             Self::Leaf {
                 ranges, capacity, ..
             } => {
-                let children: [Node<T, K>; 1 << K] =
+                let children: [Self; 1 << K] =
                     std::array::from_fn(|combination| {
                         let subranges: [Range<T>; K] =
                             std::array::from_fn(|i| {
@@ -224,10 +187,49 @@ where
     }
 }
 
-impl<'a, T, const K: usize> KdTree<'a, T, K>
+impl<T, const K: usize> Node<T, [T; K], K>
 where
     T: Halveable + Clone,
-    Range<T>: MidPoint<T>,
+    [(); 1 << K]: Sized,
+{
+    fn insert(&mut self, point: [T; K], id: usize) {
+        match &mut *self {
+            Self::Leaf {
+                points,
+                ids,
+                capacity,
+                ..
+            } => {
+                points.push(point);
+                ids.push(id);
+                if points.len() > capacity.get() {
+                    let owned_points = std::mem::take(points);
+                    let owned_ids = std::mem::take(ids);
+                    let _ = self.split();
+                    owned_points
+                        .into_iter()
+                        .zip(owned_ids)
+                        .for_each(|(p, id)| self.insert(p, id));
+                }
+            }
+            Self::Parent {
+                ranges, children, ..
+            } => {
+                let mut idx: usize = 0;
+                ranges.iter().enumerate().for_each(|(axis, range)| {
+                    if point[axis] >= range.mid_point() {
+                        idx += 1 << axis;
+                    }
+                });
+                children[idx].insert(point, id);
+            }
+        };
+    }
+}
+
+impl<T, Item, const K: usize> KdTree<T, Item, K>
+where
+    T: Halveable + Clone,
     [(); 1 << K]: Sized,
 {
     pub fn new(ranges: impl Into<[Range<T>; K]>, capacity: usize) -> Self {
@@ -240,8 +242,14 @@ where
             count: 0,
         }
     }
+}
 
-    fn insert_point(&mut self, point: [T; K]) {
+impl<T, const K: usize> KdTree<T, [T; K], K>
+where
+    T: Halveable + Clone,
+    [(); 1 << K]: Sized,
+{
+    pub fn insert_point(&mut self, point: [T; K]) {
         if self
             .root
             .get_ranges()
@@ -275,6 +283,11 @@ where
         vec.into_iter().for_each(|p| self.insert_point(p));
     }
 }
+
+pub type Quadtree<T, Item = [T; 2]> = KdTree<T, Item, 2>;
+pub type QuadtreeNode<T, Item = [T; 2]> = Node<T, Item, 2>;
+pub type Octree<T, Item = [T; 3]> = KdTree<T, Item, 3>;
+pub type OctreeNode<T, Item = [T; 2]> = Node<T, Item, 3>;
 
 #[cfg(test)]
 mod tests {}
