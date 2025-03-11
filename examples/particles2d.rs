@@ -14,7 +14,7 @@ use macroquad::rand::gen_range;
 //       i.e. a form of point cloud.
 //       Spawn cluster with mouse click?
 
-const START_SPEED: f32 = 150.0;
+const START_SPEED: f32 = 500.0;
 const PLOT_SCALE: f32 = 0.33;
 
 #[inline]
@@ -152,7 +152,9 @@ fn handle_collisions_global(particles: &mut Vec<Particle>) {
 fn total_energy(particles: &Vec<Particle>) -> f32 {
     particles
         .iter()
-        .fold(0.0, |acc, p| acc + 0.5 * p.mass * p.speed_squared())
+        .map(|p| 0.5 * p.mass * p.speed_squared())
+        .filter(|e| !e.is_nan())
+        .fold(0.0, |acc, e| acc + e)
 }
 
 fn maxwell_boltzmann(v: f32, m: f32, E: f32, N: f32) -> f32 {
@@ -185,6 +187,35 @@ fn create_particles(
             )
         })
         .collect()
+}
+
+fn make_point_cluster(
+    n: usize,
+    xc: f32,
+    yc: f32,
+    cluster_r: f32,
+    point_r: f32,
+) -> Vec<Particle> {
+    let mut particles = vec![];
+    for _ in 0..n {
+        let r: f32 = gen_range(0.0, cluster_r);
+        let theta: f32 = gen_range(0.0, 2.0 * std::f32::consts::PI);
+        let x = xc + r * theta.cos();
+        let y = yc + r * theta.sin();
+        let v = gen_range(0.0, START_SPEED);
+        let vx = v * (x - xc) / cluster_r;
+        let vy = v * (y - yc) / cluster_r;
+        let mass = point_r * point_r;
+        particles.push(Particle {
+            x,
+            y,
+            vx,
+            vy,
+            radius: point_r,
+            mass,
+        });
+    }
+    particles
 }
 
 fn conf() -> Conf {
@@ -315,15 +346,17 @@ async fn main() {
         }
     }
 
+    // Particle system configuration
+    let n = 100;
+    let particle_radius = 4.0;
+    let particle_mass = particle_radius * particle_radius;
+    let cluster_radius = 25.0;
+    let mut particles: Vec<Particle> = vec![];
+    //create_particles(sim_width, sim_height, radius, n);
+
     // Screen space for simulation
     let sim_width = screen_width() / 2.0;
     let sim_height = screen_height();
-
-    // Particle system configuration
-    let n = 5000;
-    let radius = 4.0;
-    let mut particles = create_particles(sim_width, sim_height, radius, n);
-    let capacity = 15;
 
     // Flags
     let mut use_quadtree = true;
@@ -332,6 +365,9 @@ async fn main() {
 
     let mut frame = 0;
     loop {
+        // Get the mouse position
+        let (mouse_x, mouse_y) = mouse_position();
+
         // Handle keyboard input
         //
         // Quadtree ON/OFF
@@ -367,14 +403,29 @@ async fn main() {
             let status = if show_bounds { "ON" } else { "OFF" };
             println!("Show bounds: {status}");
         }
+        // Drain particles
+        if is_key_pressed(KeyCode::E) {
+            particles.clear();
+        }
+        // Mouse click
+        if is_mouse_button_pressed(MouseButton::Left) {
+            particles.extend(make_point_cluster(
+                n,
+                mouse_x,
+                mouse_y,
+                cluster_radius,
+                particle_radius,
+            ));
+        }
 
         // Get elapsed time
         let dt = get_frame_time();
 
         // Create histogram for storing velocities
-        let mut histogram = Histogram::new(0.0..START_SPEED * 3.0, n / 50);
+        let mut histogram = Histogram::new(0.0..START_SPEED * 1.0, 75);
 
         // Create KdTree
+        let capacity = 10;
         let bounds = [(0.0..sim_width), (0.0..sim_height)];
         let mut tree = KdTree::new(bounds, capacity);
 
@@ -463,6 +514,15 @@ async fn main() {
         // Logging
         if frame % 100 == 0 {
             //println!("frame time = {:.2} ms", dt * 1000.0);
+            //println!("E = {energy}");
+            //println!("{tree:#?}");
+            /*
+            println!(
+                "tree count: {}, particles.len(): {}",
+                tree.count,
+                particles.len()
+            );
+            */
         }
 
         // Drawing section
@@ -485,10 +545,19 @@ async fn main() {
             draw_bounds(&tree.root);
         }
 
+        // Draw black rectangle over statistics screen space to remove clipping
+        // particles
+        draw_rectangle(
+            sim_width,
+            0.0,
+            screen_width() - sim_width,
+            screen_height(),
+            BLACK,
+        );
         // Draw the velocity histogram
         draw_histogram(
             &histogram,
-            particles[0].mass,
+            particle_mass,
             energy,
             sim_width,
             0.0,
@@ -498,7 +567,7 @@ async fn main() {
         // Draw the theoretical distribution
         draw_maxwell_boltzmann(
             &histogram,
-            particles[0].mass,
+            particle_mass,
             energy,
             particles.len(),
             sim_width,
@@ -507,8 +576,37 @@ async fn main() {
             screen_height(),
         );
 
+        // Draw boundary line for simulation space
+        draw_line(sim_width, 0.0, sim_width, sim_height, 1.0, WHITE);
+
         // Display FPS in top left corner
-        draw_text(format!("FPS: {}", get_fps()).as_str(), 0., 16., 32., GREEN);
+        draw_text(format!("FPS: {}", get_fps()).as_str(), 0., 20., 32., GREEN);
+        draw_text(
+            format!("Particle count: {}", particles.len()).as_str(),
+            sim_width + 5.,
+            20.,
+            32.,
+            WHITE,
+        );
+
+        // Draw crosshair
+        let crosshair_size = 10.0;
+        draw_line(
+            mouse_x - crosshair_size,
+            mouse_y,
+            mouse_x + crosshair_size,
+            mouse_y,
+            2.0,
+            GREEN,
+        );
+        draw_line(
+            mouse_x,
+            mouse_y - crosshair_size,
+            mouse_x,
+            mouse_y + crosshair_size,
+            2.0,
+            GREEN,
+        );
 
         frame += 1;
         next_frame().await
