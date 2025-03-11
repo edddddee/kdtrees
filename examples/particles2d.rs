@@ -486,7 +486,7 @@ async fn main() {
         }
 
         // Draw the velocity histogram
-        let summation = draw_histogram(
+        draw_histogram(
             &histogram,
             particles[0].mass,
             energy,
@@ -496,7 +496,7 @@ async fn main() {
             screen_height(),
         );
         // Draw the theoretical distribution
-        let integral = draw_maxwell_boltzmann(
+        draw_maxwell_boltzmann(
             &histogram,
             particles[0].mass,
             energy,

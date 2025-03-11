@@ -256,9 +256,7 @@ where
 
     pub fn insert<Item>(&mut self, item: Item)
     where
-        //for<'b> &'b Item: AsCoordinates<T, K>,
         Item: Into<[T; K]> + ?Sized,
-        //[T; K]: for<'b> From<&'b Item>,
     {
         self.insert_point(item.into());
     }
