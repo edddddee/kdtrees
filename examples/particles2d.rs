@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use itertools::Itertools;
-use kdtrees::{KdTree, MidPoint};
+use kdtrees::{MidPoint, Quadtree, QuadtreeNode};
+use macroquad::miniquad::window::show_mouse;
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
 //use rayon::prelude::*;
@@ -14,7 +15,7 @@ use macroquad::rand::gen_range;
 //       i.e. a form of point cloud.
 //       Spawn cluster with mouse click?
 
-const START_SPEED: f32 = 500.0;
+const START_SPEED: f32 = 300.0;
 const PLOT_SCALE: f32 = 0.33;
 
 #[inline]
@@ -108,12 +109,9 @@ impl From<&Particle> for [f32; 2] {
     }
 }
 
-fn handle_collisions(
-    node: &kdtrees::Node<f32, 2>,
-    particles: &mut Vec<Particle>,
-) {
+fn handle_collisions(node: &QuadtreeNode<f32>, particles: &mut Vec<Particle>) {
     match node {
-        kdtrees::Node::Leaf { ids, .. } => {
+        QuadtreeNode::Leaf { ids, .. } => {
             if ids.len() >= 2 {
                 for pair in ids.iter().combinations(2) {
                     let id1: usize = *pair[0];
@@ -128,7 +126,7 @@ fn handle_collisions(
                 }
             }
         }
-        kdtrees::Node::Parent { children, .. } => {
+        QuadtreeNode::Parent { children, .. } => {
             for child in children.iter() {
                 handle_collisions(child, &mut *particles);
             }
@@ -223,6 +221,7 @@ fn conf() -> Conf {
         window_title: "Quadtree of 2D particles".to_string(),
         window_width: 1600,
         window_height: 800,
+        window_resizable: false,
         ..Default::default()
     }
 }
@@ -273,9 +272,9 @@ impl Histogram {
 #[macroquad::main(conf)]
 async fn main() {
     // Function that traverses the quadtree and draws boundary lines
-    fn draw_bounds(node: &kdtrees::Node<f32, 2>) {
+    fn draw_bounds(node: &QuadtreeNode<f32>) {
         match node {
-            kdtrees::Node::Parent {
+            QuadtreeNode::Parent {
                 ranges, children, ..
             } => {
                 let [x1, x2, y] =
@@ -347,8 +346,8 @@ async fn main() {
     }
 
     // Particle system configuration
-    let n = 100;
-    let particle_radius = 4.0;
+    let n = 200;
+    let particle_radius = 2.0;
     let particle_mass = particle_radius * particle_radius;
     let cluster_radius = 25.0;
     let mut particles: Vec<Particle> = vec![];
@@ -360,9 +359,11 @@ async fn main() {
 
     // Flags
     let mut use_quadtree = true;
-    let mut boundary_conditions = BoundaryConditions::PeriodicHorizontal;
+    let mut boundary_conditions = BoundaryConditions::Periodic;
     let mut show_bounds = false;
+    let mut show_stats = true;
 
+    show_mouse(false);
     let mut frame = 0;
     loop {
         // Get the mouse position
@@ -407,6 +408,12 @@ async fn main() {
         if is_key_pressed(KeyCode::E) {
             particles.clear();
         }
+        // Toggle stats
+        if is_key_pressed(KeyCode::S) {
+            show_stats = !show_stats;
+            let status = if show_stats { "ON" } else { "OFF" };
+            println!("Show statistics: {status}");
+        }
         // Mouse click
         if is_mouse_button_pressed(MouseButton::Left) {
             particles.extend(make_point_cluster(
@@ -422,12 +429,12 @@ async fn main() {
         let dt = get_frame_time();
 
         // Create histogram for storing velocities
-        let mut histogram = Histogram::new(0.0..START_SPEED * 1.0, 75);
+        let mut histogram = Histogram::new(0.0..START_SPEED * 1.0, 100);
 
         // Create KdTree
         let capacity = 10;
         let bounds = [(0.0..sim_width), (0.0..sim_height)];
-        let mut tree = KdTree::new(bounds, capacity);
+        let mut tree = Quadtree::new(bounds, capacity);
 
         // Handle particle collisions depending on whether quadtree approach
         // is used or not
@@ -445,25 +452,27 @@ async fn main() {
             particle.y += particle.vy * dt;
 
             let speed = dist_squared(particle.vx, particle.vy, 0.0, 0.0).sqrt();
-            histogram.insert(speed);
+            if show_stats {
+                histogram.insert(speed);
+            }
 
             // Logic for handling boundary conditions
             match boundary_conditions {
                 BoundaryConditions::Collide => {
                     if particle.x + particle.radius > sim_width {
-                        particle.x = sim_width - particle.radius;
+                        particle.x = sim_width - particle.radius - 1.0;
                         particle.vx *= -1.0;
                     }
                     if particle.x - particle.radius < 0.0 {
-                        particle.x = particle.radius;
+                        particle.x = particle.radius + 1.0;
                         particle.vx *= -1.0;
                     }
                     if particle.y + particle.radius > sim_height {
-                        particle.y = sim_height - particle.radius;
+                        particle.y = sim_height - particle.radius - 1.0;
                         particle.vy *= -1.0;
                     }
                     if particle.y - particle.radius < 0.0 {
-                        particle.y = particle.radius;
+                        particle.y = particle.radius + 1.0;
                         particle.vy *= -1.0;
                     }
                 }
@@ -483,11 +492,11 @@ async fn main() {
                         particle.x += sim_width;
                     }
                     if particle.y + particle.radius > sim_height {
-                        particle.y = sim_height - particle.radius;
+                        particle.y = sim_height - particle.radius - 1.0;
                         particle.vy *= -1.0;
                     }
                     if particle.y - particle.radius < 0.0 {
-                        particle.y = particle.radius;
+                        particle.y = particle.radius + 1.0;
                         particle.vy *= -1.0;
                     }
                 }
@@ -514,15 +523,6 @@ async fn main() {
         // Logging
         if frame % 100 == 0 {
             //println!("frame time = {:.2} ms", dt * 1000.0);
-            //println!("E = {energy}");
-            //println!("{tree:#?}");
-            /*
-            println!(
-                "tree count: {}, particles.len(): {}",
-                tree.count,
-                particles.len()
-            );
-            */
         }
 
         // Drawing section
@@ -554,27 +554,29 @@ async fn main() {
             screen_height(),
             BLACK,
         );
-        // Draw the velocity histogram
-        draw_histogram(
-            &histogram,
-            particle_mass,
-            energy,
-            sim_width,
-            0.0,
-            screen_width() - sim_width,
-            screen_height(),
-        );
-        // Draw the theoretical distribution
-        draw_maxwell_boltzmann(
-            &histogram,
-            particle_mass,
-            energy,
-            particles.len(),
-            sim_width,
-            0.0,
-            screen_width() - sim_width,
-            screen_height(),
-        );
+        if show_stats {
+            // Draw the velocity histogram
+            draw_histogram(
+                &histogram,
+                particle_mass,
+                energy,
+                sim_width,
+                0.0,
+                screen_width() - sim_width,
+                screen_height(),
+            );
+            // Draw the theoretical distribution
+            draw_maxwell_boltzmann(
+                &histogram,
+                particle_mass,
+                energy,
+                particles.len(),
+                sim_width,
+                0.0,
+                screen_width() - sim_width,
+                screen_height(),
+            );
+        }
 
         // Draw boundary line for simulation space
         draw_line(sim_width, 0.0, sim_width, sim_height, 1.0, WHITE);
