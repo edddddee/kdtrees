@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use itertools::Itertools;
-use kdtrees::{MidPoint, Quadtree, QuadtreeNode};
+use kdtrees::{Cell2, MidPoint, Node, Quadtree};
+use macroquad::color::hsl_to_rgb;
 use macroquad::miniquad::window::show_mouse;
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
@@ -34,6 +35,7 @@ struct Particle {
 }
 
 impl Particle {
+    #[allow(dead_code)]
     fn new(x: f32, y: f32, radius: f32, density: f32) -> Self {
         // let vx = gen_range(-30.0, 50.0);
         // let vy = gen_range(-50.0, 30.0);
@@ -73,6 +75,11 @@ impl Particle {
         self.vx * self.vx + self.vy * self.vy
     }
 
+    #[inline]
+    fn speed(&self) -> f32 {
+        self.speed_squared().sqrt()
+    }
+
     fn resolve_collision(&mut self, other: &mut Self) {
         let inner_prod = (self.vx - other.vx) * (self.x - other.x)
             + (self.vy - other.vy) * (self.y - other.y);
@@ -103,15 +110,29 @@ impl Particle {
     }
 }
 
+/*
 impl From<&Particle> for [f32; 2] {
     fn from(p: &Particle) -> Self {
         [p.x, p.y]
     }
 }
+*/
 
-fn handle_collisions(node: &QuadtreeNode<f32>, particles: &mut Vec<Particle>) {
+impl From<&Particle> for [(f32, f32); 2] {
+    fn from(p: &Particle) -> Self {
+        [
+            (p.x - p.radius, p.x + p.radius),
+            (p.y - p.radius, p.y + p.radius),
+        ]
+    }
+}
+
+fn handle_collisions<Item>(
+    node: &Node<f32, Item, 2>,
+    particles: &mut Vec<Particle>,
+) {
     match node {
-        QuadtreeNode::Leaf { ids, .. } => {
+        Node::Leaf { ids, .. } => {
             if ids.len() >= 2 {
                 for pair in ids.iter().combinations(2) {
                     let id1: usize = *pair[0];
@@ -126,9 +147,9 @@ fn handle_collisions(node: &QuadtreeNode<f32>, particles: &mut Vec<Particle>) {
                 }
             }
         }
-        QuadtreeNode::Parent { children, .. } => {
+        Node::Parent { children, .. } => {
             for child in children.iter() {
-                handle_collisions(child, &mut *particles);
+                handle_collisions(child, particles);
             }
         }
     }
@@ -155,19 +176,23 @@ fn total_energy(particles: &Vec<Particle>) -> f32 {
         .fold(0.0, |acc, e| acc + e)
 }
 
+#[allow(non_snake_case)]
 fn maxwell_boltzmann(v: f32, m: f32, E: f32, N: f32) -> f32 {
     let a = m * N / E;
     a * v * f32::exp(-0.5 * a * v * v)
 }
 
+#[allow(non_snake_case)]
 fn most_probable_speed(m: f32, E: f32, N: f32) -> f32 {
     (2.0 * E / (m * N)).sqrt()
 }
 
+#[allow(non_snake_case)]
 fn max_probability(m: f32, E: f32, N: f32) -> f32 {
     maxwell_boltzmann(most_probable_speed(m, E, N), m, E, N)
 }
 
+#[allow(dead_code)]
 fn create_particles(
     width: f32,
     height: f32,
@@ -272,9 +297,9 @@ impl Histogram {
 #[macroquad::main(conf)]
 async fn main() {
     // Function that traverses the quadtree and draws boundary lines
-    fn draw_bounds(node: &QuadtreeNode<f32>) {
+    fn draw_bounds<Item>(node: &Node<f32, Item, 2>) {
         match node {
-            QuadtreeNode::Parent {
+            Node::Parent {
                 ranges, children, ..
             } => {
                 let [x1, x2, y] =
@@ -312,7 +337,7 @@ async fn main() {
             let max_pdf =
                 max_probability(mass, energy, hist.total_count as f32);
             let freq_scl = freq * height * PLOT_SCALE / (bin_delta * max_pdf);
-            let y = height - freq_scl;
+            let y = top + height - freq_scl;
             draw_rectangle(x, y, bin_width, freq_scl * height, RED);
         }
     }
@@ -335,7 +360,7 @@ async fn main() {
             let pdf = maxwell_boltzmann(v, mass, energy, num_particles as f32);
             let max_pdf = max_probability(mass, energy, num_particles as f32);
             let pdf_scl = pdf * height * PLOT_SCALE / max_pdf;
-            let y = height - pdf_scl;
+            let y = top + height - pdf_scl;
             let x = left + x as f32;
 
             draw_line(last_x, last_y, x, y, 2.0, YELLOW);
@@ -357,11 +382,24 @@ async fn main() {
     let sim_width = screen_width() / 2.0;
     let sim_height = screen_height();
 
+    // Set max quadtree depth (doesnt make sense to subdivide pixels)
+    let max_depth = {
+        let min_cell_size = 3.0 * 2.0 * particle_radius;
+        let divisions = sim_width.min(sim_height) / min_cell_size;
+        let mut depth = 1;
+        while ((2 << depth) as f32) < divisions {
+            depth += 1;
+        }
+        depth
+    };
+    println!("max depth: {max_depth}");
+
     // Flags
     let mut use_quadtree = true;
     let mut boundary_conditions = BoundaryConditions::Periodic;
     let mut show_bounds = false;
     let mut show_stats = true;
+    let mut bounding_box = true;
 
     show_mouse(false);
     let mut frame = 0;
@@ -375,7 +413,7 @@ async fn main() {
         if is_key_pressed(KeyCode::Space) {
             use_quadtree = !use_quadtree;
             let status = if use_quadtree { "ON" } else { "OFF" };
-            println!("Quadtree: {status}");
+            println!("[Quadtree]: {status}");
         }
         // Cycle boundary conditions
         if is_key_pressed(KeyCode::W) {
@@ -396,13 +434,13 @@ async fn main() {
                 }
             };
             boundary_conditions = new_bc;
-            println!("Boundary condition: {status}");
+            println!("[Boundary condition]: {status}");
         }
         // Show bounds ON/OFF
         if is_key_pressed(KeyCode::B) {
             show_bounds = !show_bounds;
             let status = if show_bounds { "ON" } else { "OFF" };
-            println!("Show bounds: {status}");
+            println!("[Show bounds]: {status}");
         }
         // Drain particles
         if is_key_pressed(KeyCode::E) {
@@ -412,7 +450,13 @@ async fn main() {
         if is_key_pressed(KeyCode::S) {
             show_stats = !show_stats;
             let status = if show_stats { "ON" } else { "OFF" };
-            println!("Show statistics: {status}");
+            println!("[Show statistics]: {status}");
+        }
+        // Toggle between point quadtree and cell quadtree
+        if is_key_pressed(KeyCode::P) {
+            bounding_box = !bounding_box;
+            let status = if show_stats { "Bounding box" } else { "Point" };
+            println!("[Quadtree]: {status}");
         }
         // Mouse click
         if is_mouse_button_pressed(MouseButton::Left) {
@@ -434,7 +478,16 @@ async fn main() {
         // Create KdTree
         let capacity = 10;
         let bounds = [(0.0..sim_width), (0.0..sim_height)];
-        let mut tree = Quadtree::new(bounds, capacity);
+
+        let mut tree =
+            Quadtree::<f32, Cell2<f32>>::new(bounds, capacity, Some(max_depth));
+        /*
+        let mut tree = Quadtree::<f32, Point2<f32>>::new(
+            bounds,
+            capacity,
+            Some(max_depth),
+        );
+        */
 
         // Handle particle collisions depending on whether quadtree approach
         // is used or not
@@ -516,9 +569,15 @@ async fn main() {
                 }
             }
         });
-
         // Calculate energy of particle system
         let energy = total_energy(&particles);
+
+        // Get max particle speed (for calculating particle colors)
+        let max_speed = particles
+            .iter()
+            .map(|p| p.speed())
+            .filter(|v| !v.is_nan())
+            .reduce(|acc, e| if e > acc { e } else { acc });
 
         // Logging
         if frame % 100 == 0 {
@@ -531,12 +590,32 @@ async fn main() {
         // Draw each particle. If there are a lot of them, use step_by(k) to
         // draw a subset of the particles while still simulating all particles.
         particles.iter().step_by(1).for_each(|particle| {
-            draw_circle(
-                particle.x,
-                particle.y,
-                particle.radius,
-                Color::from_hex(0x1c73ff),
-            );
+            let color = match max_speed {
+                Some(max_speed) => {
+                    let value = (particle.speed() / max_speed).clamp(0.0, 1.0);
+                    if value > 0.7 {
+                        Color::new(1.0, 0.0, 0.0, 1.0)
+                    } else if value > 0.5 {
+                        // Red (1.0, 0.0, 0.0) → Yellow (1.0, 1.0, 0.0)
+                        let t = (value - 0.5) / 0.2;
+                        Color::new(1.0, 1.0 - t, 0.0, 1.0)
+                    } else {
+                        // Cyan (0.0, 1.0, 1.0) → Blue (0.0, 0.0, 1.0)
+                        let t = value / 0.5;
+                        Color::new(0.0, t, 1.0, 1.0)
+                    }
+                }
+                None => Color::from_hex(0x1c73ff),
+            };
+            if color.r + color.g + color.b < 0.1 {
+                println!(
+                    "({}, {}, {})",
+                    color.r * 255.,
+                    color.g * 255.,
+                    color.b * 255.
+                );
+            }
+            draw_circle(particle.x, particle.y, particle.radius, color);
         });
 
         // If quadtree is used and show_bounds is set to true, display the node
