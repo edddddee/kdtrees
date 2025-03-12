@@ -412,8 +412,8 @@ pub type Cell3<T> = [(T, T); 3];
 
 pub type Quadtree<T, Item = Point2<T>> = KdTree<T, Item, 2>;
 pub type QuadtreeNode<T, Item = Point2<T>> = Node<T, Item, 2>;
-pub type Octtree<T, Item = Point3<T>> = KdTree<T, Item, 3>;
-pub type OcttreeNode<T, Item = Point3<T>> = Node<T, Item, 3>;
+pub type Octree<T, Item = Point3<T>> = KdTree<T, Item, 3>;
+pub type OctreeNode<T, Item = Point3<T>> = Node<T, Item, 3>;
 
 #[cfg(test)]
 mod tests {}
