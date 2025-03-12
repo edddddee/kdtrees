@@ -6,7 +6,6 @@ use std::ops::Range;
 
 use itertools::Itertools;
 use kdtrees::{Cell2, MidPoint, Node, Quadtree};
-use macroquad::color::hsl_to_rgb;
 use macroquad::miniquad::window::show_mouse;
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
