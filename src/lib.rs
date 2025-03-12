@@ -5,10 +5,14 @@ use core::convert::From;
 use std::num::NonZero;
 use std::ops::{Add, Div, Range};
 
-// TODO: Implement a version that takes references to the underlying object
-// TODO: Implement a version that takes points and id:s
+// TODO: Right now the tree data structure handles id:s internally based on
+//       which order items are inserted. In many cases it might be desired to
+//       have external control over which id corresponds to which point, as well
+//       as support for other id types than usize.
 // TODO: Implement a version that incrementally updates the tree when
 //       points move
+
+pub const MAX_DEPTH: usize = 32;
 
 #[derive(Debug)]
 pub struct KdTree<T, Item, const K: usize>
@@ -17,6 +21,7 @@ where
 {
     pub root: Node<T, Item, K>,
     pub count: usize,
+    pub max_depth: Option<usize>,
     #[allow(dead_code)]
     capacity: NonZero<usize>,
 }
@@ -28,15 +33,19 @@ where
 {
     Leaf {
         ranges: [Range<T>; K],
-        points: Vec<Item>,
+        items: Vec<Item>,
         ids: Vec<usize>,
         capacity: NonZero<usize>,
+        depth: usize,
+        max_depth: Option<usize>,
     },
     Parent {
         ranges: [Range<T>; K],
         children: Box<[Node<T, Item, K>; 1 << K]>,
         #[allow(dead_code)]
         capacity: NonZero<usize>,
+        depth: usize,
+        max_depth: Option<usize>,
     },
 }
 
@@ -53,7 +62,7 @@ pub trait AsCoordinates<T, const K: usize> {
 impl<S, T, const K: usize> AsCoordinates<T, K> for S
 where
     T: Copy,
-    S: Into<[T; K]> + ?Sized,
+    S: Into<[T; K]>,
 {
     fn coordinates(self) -> [T; K] {
         self.into()
@@ -99,6 +108,21 @@ pub trait MidPoint<T> {
     fn mid_point(&self) -> T;
 }
 
+pub trait Bounds<Rhs = Self> {
+    fn covers(&self, rhs: &Rhs) -> bool;
+}
+
+impl<T, const K: usize> Bounds<[(T, T); K]> for [Range<T>; K]
+where
+    T: PartialOrd,
+{
+    fn covers(&self, rhs: &[(T, T); K]) -> bool {
+        !self.iter().zip(rhs.iter()).any(|(range, bounds)| {
+            bounds.1 < range.start || bounds.0 > range.end
+        })
+    }
+}
+
 impl<T> MidPoint<T> for Range<T>
 where
     T: Halveable + Clone,
@@ -113,17 +137,24 @@ where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
 {
-    fn new(ranges: [Range<T>; K], capacity: NonZero<usize>) -> Self {
+    fn new(
+        ranges: [Range<T>; K],
+        capacity: NonZero<usize>,
+        depth: usize,
+        max_depth: Option<usize>,
+    ) -> Self {
         Self::Leaf {
             ranges,
             capacity,
-            points: vec![],
+            items: vec![],
             ids: vec![],
+            depth,
+            max_depth,
         }
     }
 
     #[inline]
-    fn get_ranges(&self) -> &[Range<T>; K] {
+    fn ranges(&self) -> &[Range<T>; K] {
         match self {
             Self::Leaf { ranges, .. } => ranges,
             Self::Parent { ranges, .. } => ranges,
@@ -141,14 +172,18 @@ where
     // the range is [a, c).
     fn split(&mut self) -> Result<(), ErrorKind> {
         // If the range has 0 volume, it makes no sense to split.
-        if self.get_ranges().iter().any(|range| range.is_empty()) {
+        if self.ranges().iter().any(|range| range.is_empty()) {
             return Err(ErrorKind::EmptyRegion);
         }
         let self_owned = unsafe { std::ptr::read(self) };
         match self_owned {
             // Splitting path
             Self::Leaf {
-                ranges, capacity, ..
+                ranges,
+                capacity,
+                depth,
+                max_depth,
+                ..
             } => {
                 let children: [Self; 1 << K] =
                     std::array::from_fn(|combination| {
@@ -162,13 +197,15 @@ where
                                     mid_point..range.end.clone()
                                 }
                             });
-                        Node::new(subranges, capacity)
+                        Node::new(subranges, capacity, depth + 1, max_depth)
                     });
 
                 let new_self = Self::Parent {
                     ranges,
                     capacity,
                     children: Box::new(children),
+                    depth,
+                    max_depth,
                 };
                 //new_self.insert_vec(items);
                 //items.into_iter().for_each(|item| new_self.insert(item));
@@ -195,18 +232,26 @@ where
     fn insert(&mut self, point: [T; K], id: usize) {
         match &mut *self {
             Self::Leaf {
-                points,
+                items,
                 ids,
                 capacity,
+                depth,
+                max_depth,
                 ..
             } => {
-                points.push(point);
+                items.push(point);
                 ids.push(id);
-                if points.len() > capacity.get() {
-                    let owned_points = std::mem::take(points);
+                let mut max_depth_reached = false;
+                if let Some(max_depth) = max_depth {
+                    if depth >= max_depth {
+                        max_depth_reached = true;
+                    }
+                }
+                if items.len() > capacity.get() && !max_depth_reached {
+                    let owned_items = std::mem::take(items);
                     let owned_ids = std::mem::take(ids);
                     let _ = self.split();
-                    owned_points
+                    owned_items
                         .into_iter()
                         .zip(owned_ids)
                         .for_each(|(p, id)| self.insert(p, id));
@@ -227,18 +272,66 @@ where
     }
 }
 
+impl<T, const K: usize> Node<T, [(T, T); K], K>
+where
+    T: Halveable + Clone,
+    [(); 1 << K]: Sized,
+{
+    fn insert(&mut self, item: [(T, T); K], id: usize) {
+        match &mut *self {
+            Self::Leaf {
+                items,
+                ids,
+                capacity,
+                depth,
+                max_depth,
+                ..
+            } => {
+                items.push(item);
+                ids.push(id);
+                let mut max_depth_reached = false;
+                if let Some(max_depth) = max_depth {
+                    if depth >= max_depth {
+                        max_depth_reached = true;
+                    }
+                }
+                if items.len() > capacity.get() && !max_depth_reached {
+                    let owned_items = std::mem::take(items);
+                    let owned_ids = std::mem::take(ids);
+                    let _ = self.split();
+                    owned_items
+                        .into_iter()
+                        .zip(owned_ids)
+                        .for_each(|(p, id)| self.insert(p, id));
+                }
+            }
+            Self::Parent { children, .. } => {
+                for child in children.iter_mut() {
+                    if child.ranges().covers(&item) {
+                        child.insert(item.clone(), id);
+                    }
+                }
+            }
+        };
+    }
+}
 impl<T, Item, const K: usize> KdTree<T, Item, K>
 where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
 {
-    pub fn new(ranges: impl Into<[Range<T>; K]>, capacity: usize) -> Self {
+    pub fn new(
+        ranges: impl Into<[Range<T>; K]>,
+        capacity: usize,
+        max_depth: Option<usize>,
+    ) -> Self {
         let capacity: NonZero<usize> =
             capacity.try_into().expect("Capacity must be nonzero");
-        let root = Node::new(ranges.into(), capacity);
+        let root = Node::new(ranges.into(), capacity, 0, max_depth);
         Self {
             root,
             capacity,
+            max_depth,
             count: 0,
         }
     }
@@ -252,7 +345,7 @@ where
     pub fn insert_point(&mut self, point: [T; K]) {
         if self
             .root
-            .get_ranges()
+            .ranges()
             .iter()
             .enumerate()
             .all(|(axis, range)| range.contains(&point[axis]))
@@ -264,7 +357,7 @@ where
 
     pub fn insert<Item>(&mut self, item: Item)
     where
-        Item: Into<[T; K]> + ?Sized,
+        Item: Into<[T; K]>,
     {
         self.insert_point(item.into());
     }
@@ -284,10 +377,43 @@ where
     }
 }
 
-pub type Quadtree<T, Item = [T; 2]> = KdTree<T, Item, 2>;
-pub type QuadtreeNode<T, Item = [T; 2]> = Node<T, Item, 2>;
-pub type Octree<T, Item = [T; 3]> = KdTree<T, Item, 3>;
-pub type OctreeNode<T, Item = [T; 2]> = Node<T, Item, 3>;
+impl<T, const K: usize> KdTree<T, [(T, T); K], K>
+where
+    T: Halveable + Clone,
+    [(); 1 << K]: Sized,
+{
+    pub fn insert_cell(&mut self, cell: [(T, T); K]) {
+        if self.root.ranges().covers(&cell) {
+            self.root.insert(cell, self.count);
+            self.count += 1;
+        }
+    }
+    pub fn insert<Item>(&mut self, item: Item)
+    where
+        Item: Into<[(T, T); K]>,
+    {
+        self.insert_cell(item.into());
+    }
+
+    pub fn insert_slice<Item>(&mut self, items: &[Item])
+    where
+        for<'b> &'b Item: Into<[(T, T); K]>,
+    {
+        for item in items {
+            let cell: [(T, T); K] = item.into();
+            self.insert_cell(cell);
+        }
+    }
+}
+pub type Point2<T> = [T; 2];
+pub type Point3<T> = [T; 3];
+pub type Cell2<T> = [(T, T); 2];
+pub type Cell3<T> = [(T, T); 3];
+
+pub type Quadtree<T, Item = Point2<T>> = KdTree<T, Item, 2>;
+pub type QuadtreeNode<T, Item = Point2<T>> = Node<T, Item, 2>;
+pub type Octtree<T, Item = Point3<T>> = KdTree<T, Item, 3>;
+pub type OcttreeNode<T, Item = Point3<T>> = Node<T, Item, 3>;
 
 #[cfg(test)]
 mod tests {}
