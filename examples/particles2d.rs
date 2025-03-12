@@ -10,11 +10,6 @@ use macroquad::color::hsl_to_rgb;
 use macroquad::miniquad::window::show_mouse;
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
-//use rayon::prelude::*;
-
-// TODO: Make a function to spawn a cluster of points around some center.
-//       i.e. a form of point cloud.
-//       Spawn cluster with mouse click?
 
 const START_SPEED: f32 = 300.0;
 const PLOT_SCALE: f32 = 0.33;
