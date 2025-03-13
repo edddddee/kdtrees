@@ -2,6 +2,12 @@
 #![feature(generic_const_exprs)]
 
 use std::collections::HashMap;
+//use rayon::prelude::*;
+
+// TODO: Make a function to spawn a cluster of points around some center.
+//       i.e. a form of point cloud.
+//       Spawn cluster with mouse click?
+use std::f32::consts::PI;
 use std::ops::Range;
 
 use itertools::Itertools;
@@ -9,14 +15,12 @@ use kdtrees::{Cell2, MidPoint, Node, Quadtree};
 use macroquad::miniquad::window::show_mouse;
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
-//use rayon::prelude::*;
-
-// TODO: Make a function to spawn a cluster of points around some center.
-//       i.e. a form of point cloud.
-//       Spawn cluster with mouse click?
 
 const START_SPEED: f32 = 300.0;
 const PLOT_SCALE: f32 = 0.33;
+const GRAVITY: f32 = 300.;
+const DRAG_COEFF: f32 = 0.47;
+const FLUID_DENSITY: f32 = 0.001;
 
 #[inline]
 const fn dist_squared(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
@@ -391,7 +395,7 @@ async fn main() {
 
     // Particle system configuration
     let n = 200;
-    let particle_radius = 4.0;
+    let particle_radius = 5.0;
     let particle_mass = particle_radius * particle_radius;
     let cluster_radius = 25.0;
     let mut particles: Vec<Particle> = vec![];
@@ -409,15 +413,17 @@ async fn main() {
         while ((2 << depth) as f32) < divisions {
             depth += 1;
         }
-        depth
+        depth.min(10)
     };
 
     // Flags
+    let mut boundary_conditions = BoundaryConditions::Collide;
     let mut use_quadtree = true;
-    let mut boundary_conditions = BoundaryConditions::Periodic;
     let mut show_bounds = false;
     let mut show_stats = true;
     let mut bounding_box = true;
+    let mut enable_gravity = false;
+    let mut enable_drag = false;
 
     show_mouse(false);
     let mut frame = 0;
@@ -470,11 +476,15 @@ async fn main() {
             let status = if show_stats { "ON" } else { "OFF" };
             println!("[Show statistics]: {status}");
         }
-        // Toggle between point quadtree and cell quadtree
-        if is_key_pressed(KeyCode::P) {
-            bounding_box = !bounding_box;
-            let status = if show_stats { "Bounding box" } else { "Point" };
-            println!("[Quadtree]: {status}");
+        if is_key_pressed(KeyCode::G) {
+            enable_gravity = !enable_gravity;
+            let status = if enable_gravity { "ON" } else { "OFF" };
+            println!("[Gravity]: {status}");
+        }
+        if is_key_pressed(KeyCode::D) {
+            enable_drag = !enable_drag;
+            let status = if enable_drag { "ON" } else { "OFF" };
+            println!("[Drag]: {status}");
         }
         // Mouse click
         if is_mouse_button_pressed(MouseButton::Left) {
@@ -489,9 +499,17 @@ async fn main() {
 
         // Get elapsed time
         let dt = get_frame_time();
+        //
+        // Get max particle speed (for calculating particle colors)
+        let max_speed = particles
+            .iter()
+            .map(|p| p.speed())
+            .filter(|v| !v.is_nan())
+            .reduce(|acc, e| if e > acc { e } else { acc });
 
         // Create histogram for storing velocities
-        let mut histogram = Histogram::new(0.0..START_SPEED * 1.0, 100);
+        let mut histogram =
+            Histogram::new(0.0..max_speed.unwrap_or(START_SPEED), 100);
 
         // Create KdTree
         let capacity = 10;
@@ -518,11 +536,26 @@ async fn main() {
 
         // Update particle states
         particles.iter_mut().for_each(|particle| {
+            let speed = dist_squared(particle.vx, particle.vy, 0.0, 0.0).sqrt();
+            if enable_gravity {
+                particle.vy += GRAVITY * dt;
+            }
+            if enable_drag {
+                let r = particle.radius;
+                let drag_acc = 0.5
+                    * DRAG_COEFF
+                    * FLUID_DENSITY
+                    * PI
+                    * r
+                    * r
+                    * particle.speed_squared();
+                particle.vx -= dt * drag_acc * particle.vx / speed;
+                particle.vy -= dt * drag_acc * particle.vy / speed;
+            }
             // Integrate each particle's position
             particle.x += particle.vx * dt;
             particle.y += particle.vy * dt;
 
-            let speed = dist_squared(particle.vx, particle.vy, 0.0, 0.0).sqrt();
             if show_stats {
                 histogram.insert(speed);
             }
@@ -589,13 +622,6 @@ async fn main() {
         });
         // Calculate energy of particle system
         let energy = total_energy(&particles);
-
-        // Get max particle speed (for calculating particle colors)
-        let max_speed = particles
-            .iter()
-            .map(|p| p.speed())
-            .filter(|v| !v.is_nan())
-            .reduce(|acc, e| if e > acc { e } else { acc });
 
         // Logging
         if frame % 100 == 0 {
