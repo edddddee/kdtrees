@@ -240,13 +240,22 @@ fn make_point_cluster(
     particles
 }
 
-fn conf() -> Conf {
-    Conf {
-        window_title: "Quadtree of 2D particles".to_string(),
-        window_width: 1600,
-        window_height: 800,
-        window_resizable: false,
-        ..Default::default()
+fn heat_gradient(value: f32) -> Color {
+    let value = value.clamp(0.0, 1.0);
+    if value > 0.8 {
+        Color::new(1.0, 0.0, 0.0, 1.0)
+    } else if value > 0.6 {
+        let t = (value - 0.6) / 0.2;
+        Color::new(1.0, 1.0 - t, 0.0, 1.0)
+    } else if value > 0.5 {
+        let t = (value - 0.5) / 0.1;
+        Color::new(t, 1.0, 0.0, 1.0)
+    } else if value > 0.25 {
+        let t = (value - 0.25) / 0.25;
+        Color::new(0.0, 1.0, 1.0 - t, 1.0)
+    } else {
+        let t = value / 0.25;
+        Color::new(0.0, t, 1.0, 1.0)
     }
 }
 
@@ -290,6 +299,16 @@ impl Histogram {
                 }
             }
         }
+    }
+}
+
+fn conf() -> Conf {
+    Conf {
+        window_title: "Quadtree of 2D particles".to_string(),
+        window_width: 1600,
+        window_height: 800,
+        window_resizable: false,
+        ..Default::default()
     }
 }
 
@@ -337,7 +356,8 @@ async fn main() {
                 max_probability(mass, energy, hist.total_count as f32);
             let freq_scl = freq * height * PLOT_SCALE / (bin_delta * max_pdf);
             let y = top + height - freq_scl;
-            draw_rectangle(x, y, bin_width, freq_scl * height, RED);
+            let color = heat_gradient(i as f32 * bin_delta / hist.bounds.end);
+            draw_rectangle(x, y, bin_width, freq_scl * height, color);
         }
     }
 
@@ -371,7 +391,7 @@ async fn main() {
 
     // Particle system configuration
     let n = 200;
-    let particle_radius = 2.0;
+    let particle_radius = 4.0;
     let particle_mass = particle_radius * particle_radius;
     let cluster_radius = 25.0;
     let mut particles: Vec<Particle> = vec![];
@@ -391,7 +411,6 @@ async fn main() {
         }
         depth
     };
-    println!("max depth: {max_depth}");
 
     // Flags
     let mut use_quadtree = true;
@@ -590,30 +609,9 @@ async fn main() {
         // draw a subset of the particles while still simulating all particles.
         particles.iter().step_by(1).for_each(|particle| {
             let color = match max_speed {
-                Some(max_speed) => {
-                    let value = (particle.speed() / max_speed).clamp(0.0, 1.0);
-                    if value > 0.7 {
-                        Color::new(1.0, 0.0, 0.0, 1.0)
-                    } else if value > 0.5 {
-                        // Red (1.0, 0.0, 0.0) → Yellow (1.0, 1.0, 0.0)
-                        let t = (value - 0.5) / 0.2;
-                        Color::new(1.0, 1.0 - t, 0.0, 1.0)
-                    } else {
-                        // Cyan (0.0, 1.0, 1.0) → Blue (0.0, 0.0, 1.0)
-                        let t = value / 0.5;
-                        Color::new(0.0, t, 1.0, 1.0)
-                    }
-                }
+                Some(max_speed) => heat_gradient(particle.speed() / max_speed),
                 None => Color::from_hex(0x1c73ff),
             };
-            if color.r + color.g + color.b < 0.1 {
-                println!(
-                    "({}, {}, {})",
-                    color.r * 255.,
-                    color.g * 255.,
-                    color.b * 255.
-                );
-            }
             draw_circle(particle.x, particle.y, particle.radius, color);
         });
 
