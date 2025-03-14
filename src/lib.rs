@@ -342,7 +342,7 @@ where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
 {
-    pub fn insert_point(&mut self, point: [T; K]) {
+    pub fn insert_point(&mut self, point: [T; K], id: usize) {
         if self
             .root
             .ranges()
@@ -350,7 +350,7 @@ where
             .enumerate()
             .all(|(axis, range)| range.contains(&point[axis]))
         {
-            self.root.insert(point, self.count);
+            self.root.insert(point, id);
             self.count += 1;
         }
     }
