@@ -6,12 +6,9 @@ use std::fmt::Debug;
 use std::num::NonZero;
 use std::ops::{Add, Div, Mul, Range, Sub};
 
-// TODO: Right now the tree data structure handles id:s internally based on
-//       which order items are inserted. In many cases it might be desired to
-//       have external control over which id corresponds to which point, as well
-//       as support for other id types than usize.
-// TODO: Implement a version that incrementally updates the tree when
-//       points move
+// TODO: Add errors to methods that can fail
+// TODO: Add method to query the n nearest points
+// TODO: Add method to query all points within a distance d from a point
 
 pub const MAX_DEPTH: usize = 32;
 
@@ -50,13 +47,6 @@ where
         depth: usize,
         max_depth: Option<usize>,
     },
-}
-
-#[derive(Debug)]
-pub enum ErrorKind {
-    EmptyRegion,
-    NodeAlreadySplit,
-    OutOfBounds,
 }
 
 pub trait AsCoordinates<T, const K: usize> {
