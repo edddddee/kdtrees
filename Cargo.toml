@@ -3,19 +3,12 @@ name = "kdtrees"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-rand = "0.9.0"
-kdtree = "0.7.0"
-
 [dev-dependencies]
 macroquad = "0.4.13"
 rayon = "1.10.0"
 itertools = "0.14.0"
-criterion = "0.3"
-
-[[example]]
-name = "particles2d"
-path = "examples/particles2d.rs"
+rand = "0.9.0"
+kdtree = "0.7.0"
 
 [profile.release]
 debug = true
@@ -25,6 +18,3 @@ debug = true
 #lto = "fat"        # More aggressive link-time optimization
 #codegen-units = 1  # Better optimizations, but slower compile
 #panic = "abort"    # Removes unwinding, reduces binary size
-
-[profile.bench]
-debug = true
