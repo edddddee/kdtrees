@@ -2,8 +2,9 @@
 #![feature(generic_const_exprs)]
 
 use core::convert::From;
+use std::fmt::Debug;
 use std::num::NonZero;
-use std::ops::{Add, Div, Range};
+use std::ops::{Add, Div, Mul, Range, Sub};
 
 // TODO: Right now the tree data structure handles id:s internally based on
 //       which order items are inserted. In many cases it might be desired to
@@ -14,34 +15,36 @@ use std::ops::{Add, Div, Range};
 
 pub const MAX_DEPTH: usize = 32;
 
-#[derive(Debug)]
-pub struct KdTree<T, Item, const K: usize>
+#[derive(Clone, Debug)]
+pub struct KdTreeBase<T, Item, const K: usize, Idx = usize>
 where
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
-    pub root: Node<T, Item, K>,
+    pub root: Node<T, Item, K, Idx>,
     pub count: usize,
     pub max_depth: Option<usize>,
     #[allow(dead_code)]
     capacity: NonZero<usize>,
 }
 
-#[derive(Debug)]
-pub enum Node<T, Item, const K: usize>
+#[derive(Clone, Debug)]
+pub enum Node<T, Item, const K: usize, Idx = usize>
 where
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
     Leaf {
         ranges: [Range<T>; K],
         items: Vec<Item>,
-        ids: Vec<usize>,
+        ids: Vec<Idx>,
         capacity: NonZero<usize>,
         depth: usize,
         max_depth: Option<usize>,
     },
     Parent {
         ranges: [Range<T>; K],
-        children: Box<[Node<T, Item, K>; 1 << K]>,
+        children: Box<[Node<T, Item, K, Idx>; 1 << K]>,
         #[allow(dead_code)]
         capacity: NonZero<usize>,
         depth: usize,
@@ -69,38 +72,79 @@ where
     }
 }
 
-/*
-impl<T, const K: usize> AsCoordinates<T, K> for [T; K]
-where
-    T: Copy,
-{
-    fn coordinates(&self) -> [T; K] {
-        *self
+pub trait Zero {
+    fn zero() -> Self;
+}
+
+impl Zero for f64 {
+    #[inline]
+    fn zero() -> Self {
+        0.0
     }
 }
-*/
 
-pub trait Two<T> {
-    fn two() -> T;
+impl Zero for f32 {
+    #[inline]
+    fn zero() -> Self {
+        0.0
+    }
 }
 
-impl<T> Two<T> for T
+pub trait AlmostZero: Sized + Zero + Sub<Output = Self> + PartialOrd {
+    fn almost_zero(&self) -> bool;
+}
+
+impl AlmostZero for f64 {
+    fn almost_zero(&self) -> bool {
+        let diff = self - Self::zero();
+        -f64::EPSILON <= diff && diff <= f64::EPSILON
+    }
+}
+
+impl AlmostZero for f32 {
+    fn almost_zero(&self) -> bool {
+        let diff = self - Self::zero();
+        -f32::EPSILON <= diff && diff <= f32::EPSILON
+    }
+}
+
+pub trait Two {
+    fn two() -> Self;
+}
+
+impl<T> Two for T
 where
     T: From<f32>,
 {
     #[inline]
-    fn two() -> T {
+    fn two() -> Self {
         2.0.into()
     }
 }
 
 pub trait Halveable:
-    Sized + PartialOrd + Add<Output = Self> + Div<Output = Self> + Two<Self>
+    Sized
+    + PartialOrd
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Div<Output = Self>
+    + Mul<Output = Self>
+    + Two
+    + AlmostZero
+    + std::fmt::Debug // TODO: Remove
 {
 }
 
 impl<T> Halveable for T where
-    T: Sized + PartialOrd + Add<Output = Self> + Div<Output = Self> + Two<Self>
+    T: Sized
+        + PartialOrd
+        + Add<Output = Self>
+        + Sub<Output = Self>
+        + Div<Output = Self>
+        + Mul<Output = Self>
+        + Two
+        + AlmostZero
+        + std::fmt::Debug // TODO: Remove
 {
 }
 
@@ -132,10 +176,11 @@ where
     }
 }
 
-impl<T, Item, const K: usize> Node<T, Item, K>
+impl<T, Item, Idx, const K: usize> Node<T, Item, K, Idx>
 where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
     fn new(
         ranges: [Range<T>; K],
@@ -146,8 +191,8 @@ where
         Self::Leaf {
             ranges,
             capacity,
-            items: vec![],
-            ids: vec![],
+            items: Vec::with_capacity(1 * capacity.get()),
+            ids: Vec::with_capacity(1 * capacity.get()),
             depth,
             max_depth,
         }
@@ -170,11 +215,7 @@ where
     // binary numbers from 0 to 2^K - 1. If the i:th bit is 1,
     // then the range along the i:th axis is [c, b), otherwise
     // the range is [a, c).
-    fn split(&mut self) -> Result<(), ErrorKind> {
-        // If the range has 0 volume, it makes no sense to split.
-        if self.ranges().iter().any(|range| range.is_empty()) {
-            return Err(ErrorKind::EmptyRegion);
-        }
+    fn split(&mut self) {
         let self_owned = unsafe { std::ptr::read(self) };
         match self_owned {
             // Splitting path
@@ -207,29 +248,26 @@ where
                     depth,
                     max_depth,
                 };
-                //new_self.insert_vec(items);
-                //items.into_iter().for_each(|item| new_self.insert(item));
                 unsafe {
                     std::ptr::write(self, new_self);
                 };
-                Ok(())
             }
             other => {
                 unsafe {
                     std::ptr::write(self, other);
                 };
-                Err(ErrorKind::NodeAlreadySplit)
             }
         }
     }
 }
 
-impl<T, const K: usize> Node<T, [T; K], K>
+impl<T, Idx, const K: usize> Node<T, [T; K], K, Idx>
 where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
-    fn insert(&mut self, point: [T; K], id: usize) {
+    fn insert(&mut self, point: [T; K], id: Idx) {
         match &mut *self {
             Self::Leaf {
                 items,
@@ -237,8 +275,10 @@ where
                 capacity,
                 depth,
                 max_depth,
+                ranges,
                 ..
             } => {
+                //println!("depth: {}", depth);
                 items.push(point);
                 ids.push(id);
                 let mut max_depth_reached = false;
@@ -247,10 +287,22 @@ where
                         max_depth_reached = true;
                     }
                 }
-                if items.len() > capacity.get() && !max_depth_reached {
+                // Test if node has reached its capacity
+                let test1 = items.len() > capacity.get();
+                // Test if node has reached the maximum depth of the tree
+                // (if it exists)
+                let test2 = !max_depth_reached;
+                // Test if any ranged has collapsed, for example due to range
+                // being smaler than machine epsilon.
+                let test3 = !ranges.iter().any(|range| {
+                    let diff = range.end.clone() - range.start.clone();
+                    diff.almost_zero()
+                });
+                // Should split if all these conditions hold
+                if test1 && test2 && test3 {
                     let owned_items = std::mem::take(items);
                     let owned_ids = std::mem::take(ids);
-                    let _ = self.split();
+                    self.split();
                     owned_items
                         .into_iter()
                         .zip(owned_ids)
@@ -262,8 +314,10 @@ where
             } => {
                 let mut idx: usize = 0;
                 ranges.iter().enumerate().for_each(|(axis, range)| {
-                    if point[axis] >= range.mid_point() {
-                        idx += 1 << axis;
+                    if T::two() * point[axis].clone()
+                        >= range.start.clone() + range.end.clone()
+                    {
+                        idx ^= 1 << axis;
                     }
                 });
                 children[idx].insert(point, id);
@@ -272,12 +326,13 @@ where
     }
 }
 
-impl<T, const K: usize> Node<T, [(T, T); K], K>
+impl<T, Idx, const K: usize> Node<T, [(T, T); K], K, Idx>
 where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
-    fn insert(&mut self, item: [(T, T); K], id: usize) {
+    fn insert(&mut self, item: [(T, T); K], id: Idx) {
         match &mut *self {
             Self::Leaf {
                 items,
@@ -298,7 +353,7 @@ where
                 if items.len() > capacity.get() && !max_depth_reached {
                     let owned_items = std::mem::take(items);
                     let owned_ids = std::mem::take(ids);
-                    let _ = self.split();
+                    self.split();
                     owned_items
                         .into_iter()
                         .zip(owned_ids)
@@ -315,10 +370,11 @@ where
         };
     }
 }
-impl<T, Item, const K: usize> KdTree<T, Item, K>
+impl<T, Item, Idx, const K: usize> KdTreeBase<T, Item, K, Idx>
 where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
     pub fn new(
         ranges: impl Into<[Range<T>; K]>,
@@ -337,82 +393,50 @@ where
     }
 }
 
-impl<T, const K: usize> KdTree<T, [T; K], K>
+impl<T, Idx, const K: usize> KdTreeBase<T, [T; K], K, Idx>
 where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
-    pub fn insert_point(&mut self, point: [T; K]) {
+    pub fn insert(&mut self, item: [T; K], id: Idx) {
         if self
             .root
             .ranges()
             .iter()
             .enumerate()
-            .all(|(axis, range)| range.contains(&point[axis]))
+            .all(|(axis, range)| range.contains(&item[axis]))
         {
-            self.root.insert(point, self.count);
+            self.root.insert(item, id);
             self.count += 1;
         }
     }
-
-    pub fn insert<Item>(&mut self, item: Item)
-    where
-        Item: Into<[T; K]>,
-    {
-        self.insert_point(item.into());
-    }
-
-    pub fn insert_slice<Item>(&mut self, items: &[Item])
-    where
-        for<'b> &'b Item: Into<[T; K]>,
-    {
-        for item in items {
-            let point: [T; K] = item.into();
-            self.insert_point(point);
-        }
-    }
-
-    pub fn insert_vec(&mut self, vec: Vec<[T; K]>) {
-        vec.into_iter().for_each(|p| self.insert_point(p));
-    }
 }
 
-impl<T, const K: usize> KdTree<T, [(T, T); K], K>
+impl<T, Idx, const K: usize> KdTreeBase<T, [(T, T); K], K, Idx>
 where
     T: Halveable + Clone,
     [(); 1 << K]: Sized,
+    Idx: Copy + Eq,
 {
-    pub fn insert_cell(&mut self, cell: [(T, T); K]) {
-        if self.root.ranges().covers(&cell) {
-            self.root.insert(cell, self.count);
+    pub fn insert(&mut self, item: [(T, T); K], id: Idx) {
+        if self.root.ranges().covers(&item) {
+            self.root.insert(item, id);
             self.count += 1;
         }
     }
-    pub fn insert<Item>(&mut self, item: Item)
-    where
-        Item: Into<[(T, T); K]>,
-    {
-        self.insert_cell(item.into());
-    }
-
-    pub fn insert_slice<Item>(&mut self, items: &[Item])
-    where
-        for<'b> &'b Item: Into<[(T, T); K]>,
-    {
-        for item in items {
-            let cell: [(T, T); K] = item.into();
-            self.insert_cell(cell);
-        }
-    }
 }
+
+pub type KdTree<T, const K: usize, Idx = usize> = KdTreeBase<T, [T; K], K, Idx>;
+
 pub type Point2<T> = [T; 2];
 pub type Point3<T> = [T; 3];
 pub type Cell2<T> = [(T, T); 2];
 pub type Cell3<T> = [(T, T); 3];
 
-pub type Quadtree<T, Item = Point2<T>> = KdTree<T, Item, 2>;
+pub type Quadtree<T, Item = Point2<T>> = KdTreeBase<T, Item, 2>;
 pub type QuadtreeNode<T, Item = Point2<T>> = Node<T, Item, 2>;
-pub type Octree<T, Item = Point3<T>> = KdTree<T, Item, 3>;
+pub type Octree<T, Item = Point3<T>> = KdTreeBase<T, Item, 3>;
 pub type OctreeNode<T, Item = Point3<T>> = Node<T, Item, 3>;
 
 #[cfg(test)]

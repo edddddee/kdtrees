@@ -17,10 +17,10 @@ use macroquad::prelude::*;
 use macroquad::rand::gen_range;
 
 const START_SPEED: f32 = 300.0;
-const PLOT_SCALE: f32 = 0.33;
 const GRAVITY: f32 = 300.;
 const DRAG_COEFF: f32 = 0.47;
 const FLUID_DENSITY: f32 = 0.001;
+const PLOT_SCALE: f32 = 0.33;
 
 #[inline]
 const fn dist_squared(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
@@ -112,14 +112,6 @@ impl Particle {
         other.y += overlap * tangenty;
     }
 }
-
-/*
-impl From<&Particle> for [f32; 2] {
-    fn from(p: &Particle) -> Self {
-        [p.x, p.y]
-    }
-}
-*/
 
 impl From<&Particle> for [(f32, f32); 2] {
     fn from(p: &Particle) -> Self {
@@ -294,15 +286,20 @@ impl Histogram {
     }
 
     fn insert(&mut self, value: f32) {
-        self.total_count += 1;
         if self.bounds.contains(&value) {
-            for (bin, bound) in self.bins.iter().enumerate() {
-                if value < *bound {
+            self.total_count += 1;
+            for (bin, upper_lim) in self.bins.iter().enumerate() {
+                if value < *upper_lim {
                     self.counts.entry(bin).and_modify(|c| *c += 1).or_insert(1);
                     break;
                 }
             }
         }
+    }
+
+    fn clear(&mut self) {
+        self.counts = HashMap::new();
+        self.total_count = 0;
     }
 }
 
@@ -395,11 +392,10 @@ async fn main() {
 
     // Particle system configuration
     let n = 200;
-    let particle_radius = 5.0;
+    let particle_radius = 2.0;
     let particle_mass = particle_radius * particle_radius;
     let cluster_radius = 25.0;
     let mut particles: Vec<Particle> = vec![];
-    //create_particles(sim_width, sim_height, radius, n);
 
     // Screen space for simulation
     let sim_width = screen_width() / 2.0;
@@ -421,7 +417,6 @@ async fn main() {
     let mut use_quadtree = true;
     let mut show_bounds = false;
     let mut show_stats = true;
-    let mut bounding_box = true;
     let mut enable_gravity = false;
     let mut enable_drag = false;
 
@@ -507,9 +502,8 @@ async fn main() {
             .filter(|v| !v.is_nan())
             .reduce(|acc, e| if e > acc { e } else { acc });
 
-        // Create histogram for storing velocities
-        let mut histogram =
-            Histogram::new(0.0..max_speed.unwrap_or(START_SPEED), 100);
+        // Histogram of particle speeds
+        let mut histogram = Histogram::new(0.0..START_SPEED, 100);
 
         // Create KdTree
         let capacity = 10;
@@ -517,22 +511,19 @@ async fn main() {
 
         let mut tree =
             Quadtree::<f32, Cell2<f32>>::new(bounds, capacity, Some(max_depth));
-        /*
-        let mut tree = Quadtree::<f32, Point2<f32>>::new(
-            bounds,
-            capacity,
-            Some(max_depth),
-        );
-        */
 
         // Handle particle collisions depending on whether quadtree approach
         // is used or not
         if use_quadtree {
-            tree.insert_slice(&particles[..]);
+            for (i, particle) in particles.iter().enumerate() {
+                tree.insert(particle.into(), i);
+            }
             handle_collisions(&tree.root, &mut particles);
         } else {
             handle_collisions_global(&mut particles);
         }
+        // Clear last iteration's particle speeds
+        histogram.clear();
 
         // Update particle states
         particles.iter_mut().for_each(|particle| {
