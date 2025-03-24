@@ -304,11 +304,10 @@ where
             } => {
                 let mut idx: usize = 0;
                 ranges.iter().enumerate().for_each(|(axis, range)| {
-                    if T::two() * point[axis].clone()
-                        >= range.start.clone() + range.end.clone()
-                    {
-                        idx ^= 1 << axis;
-                    }
+                    idx ^= ((T::two() * point[axis].clone()
+                        >= range.start.clone() + range.end.clone())
+                        as usize)
+                        << axis;
                 });
                 children[idx].insert(point, id);
             }
